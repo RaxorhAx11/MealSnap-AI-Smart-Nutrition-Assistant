@@ -1,0 +1,139 @@
+food_name,aliases,category,calories_per_100g,protein_per_100g,carbs_per_100g,fats_per_100g
+apple,apples,fruit,52,0.3,14,0.2
+banana,bananas,fruit,89,1.1,23,0.3
+orange,oranges,fruit,47,0.9,12,0.1
+strawberry,strawberries,fruit,32,0.7,8,0.3
+grape,grapes,fruit,69,0.7,18,0.2
+blueberry,blueberries,fruit,57,0.7,14,0.3
+mango,mangoes,fruit,60,0.8,15,0.4
+pineapple,pineapples,fruit,50,0.5,13,0.1
+watermelon,watermelons,fruit,30,0.6,8,0.2
+peach,peaches,fruit,39,0.9,10,0.3
+guava,guavas,fruit,68,2.6,14,1
+papaya,papayas,fruit,43,0.5,11,0.3
+pomegranate,pomegranates,fruit,83,1.7,19,1.2
+kiwi,kiwis,fruit,61,1.1,15,0.5
+cherry,cherries,fruit,50,1,12,0.3
+pear,pears,fruit,57,0.4,15,0.1
+plum,plums,fruit,46,0.7,11,0.3
+apricot,apricots,fruit,48,1.4,11,0.4
+coconut,coconuts,fruit,354,3.3,15,33
+dates,dates fruit,fruit,282,2.5,75,0.4
+rice,"white rice,brown rice,rice grain",grain,130,2.7,28,0.3
+basmati rice,"basmati rice,long grain rice",grain,130,2.7,28,0.3
+wheat,"wheat flour,whole wheat,atta",grain,339,14,71,2
+oats,"oatmeal,rolled oats",grain,389,17,66,7
+quinoa,quinoa grain,grain,368,14,64,6
+barley,"barley grain,pearl barley",grain,352,10,78,1
+corn,"corn kernels,sweet corn,maize",grain,86,3,19,1
+bread,"white bread,whole grain bread,loaf",grain,265,9,49,3.2
+pasta,"spaghetti,noodles,macaroni",grain,131,5,25,1
+ragi,"ragi flour,finger millet",grain,320,7.3,72,1.3
+jowar,"jowar flour,sorghum",grain,339,11,73,3.3
+bajra,"bajra flour,pearl millet",grain,361,11.6,67,5
+buckwheat,buckwheat flour,grain,343,13.3,71,3.4
+semolina,"semolina,sooji,rava",grain,360,12.7,73,1.1
+roti,"roti,chapati,indian bread",grain,297,11,46,7.4
+naan,naan bread,grain,310,8,50,6
+spinach,"spinach leaves,leafy greens,palak",vegetable,23,2.9,3.6,0.4
+broccoli,broccoli florets,vegetable,34,2.8,7,0.4
+carrot,carrots,vegetable,41,0.9,10,0.2
+tomato,"tomatoes,cherry tomato",vegetable,18,0.9,3.9,0.2
+potato,"potatoes,white potato,aloo",vegetable,77,2,17,0.1
+sweet potato,"sweet potatoes,yam,shakarkandi",vegetable,86,1.6,20,0.1
+onion,"onions,yellow onion,pyaz",vegetable,40,1.1,9,0.1
+bell pepper,"bell peppers,capsicum,shimla mirch",vegetable,31,1,7,0.3
+cucumber,cucumbers,kheera,vegetable,16,0.7,4,0.1
+lettuce,"lettuce leaves,leafy greens",vegetable,15,1.4,3,0.2
+cabbage,cabbage head,band gobi,vegetable,25,1.3,6,0.1
+cauliflower,cauliflower florets,gobi,vegetable,25,1.9,5,0.3
+okra,"okra,lady finger,bhindi",vegetable,33,1.9,7,0.2
+brinjal,"brinjal,eggplant,baingan",vegetable,25,1,6,0.2
+bottle gourd,"bottle gourd,lauki,calabash",vegetable,15,0.6,3.4,0.1
+ridge gourd,"ridge gourd,tori",vegetable,20,0.5,4,0.2
+bitter gourd,"bitter gourd,karela",vegetable,17,1,4,0.2
+pumpkin,"pumpkin,kaddu",vegetable,26,1,7,0.1
+zucchini,zucchinis,vegetable,17,1.2,3.1,0.3
+green beans,"green beans,french beans",vegetable,31,1.8,7,0.2
+peas,"peas,green peas,matar",vegetable,81,5.4,14,0.4
+corn kernels,"corn kernels,sweet corn,bhutta",vegetable,86,3,19,1
+mushroom,mushrooms,vegetable,22,3.1,3.3,0.3
+ginger,ginger root,adrak,vegetable,80,1.8,18,0.8
+garlic,garlic cloves,lehsun,vegetable,149,6.4,33,0.5
+green chili,"green chili,hari mirch",vegetable,40,2,9,0.2
+coriander,"coriander leaves,cilantro,dhaniya",vegetable,23,2.1,3.7,0.5
+mint,"mint leaves,pudina",vegetable,44,3.3,8,0.7
+fenugreek,"fenugreek leaves,methi",vegetable,49,4.4,6,0.9
+milk,"whole milk,cow milk,doodh",dairy,42,3.4,5,1
+curd,"curd,yogurt,dahi",dairy,59,10,3.6,0.4
+paneer,"paneer,indian cottage cheese",dairy,296,18,4,22
+cheese,"cheddar cheese,hard cheese",dairy,402,25,1.3,33
+butter,"butter,makhan",dairy,717,0.9,0.1,81
+cream,"heavy cream,whipping cream,malai",dairy,345,2,3,37
+cottage cheese,cottage cheese curd,dairy,98,11,3,4
+buttermilk,"buttermilk,chaas",dairy,40,3.3,5,0.9
+ghee,"ghee,clarified butter",dairy,900,0,0,100
+chicken,"chicken breast,chicken meat,murgh",protein,165,31,0,3.6
+beef,"beef steak,ground beef",protein,250,26,0,17
+pork,"pork chop,pork meat",protein,242,27,0,14
+salmon,"salmon fillet,fish",protein,208,20,0,12
+tuna,"tuna fish,canned tuna",protein,144,30,0,1
+turkey,turkey breast,protein,189,29,0,7
+egg,"eggs,chicken egg,anda",protein,155,13,1.1,11
+tofu,soybean curd,protein,76,8,2,5
+toor dal,"toor dal,arhar dal,pigeon pea",protein,343,22,63,1.7
+moong dal,"moong dal,green gram,split mung bean",protein,347,24,63,1.2
+urad dal,"urad dal,black gram,split black gram",protein,347,25,59,1.6
+chana dal,"chana dal,split chickpea,bengal gram",protein,364,20,61,4.2
+masoor dal,"masoor dal,red lentil",protein,358,25,63,2.2
+lentil,"lentils,legumes",protein,116,9,20,0.4
+chickpea,"chickpeas,garbanzo beans,chole",protein,164,9,27,2.6
+black bean,black beans,protein,132,9,24,0.5
+kidney bean,"kidney beans,rajma",protein,127,8.7,23,0.5
+soybean,soybeans,protein,173,17,10,9
+almond,"almonds,nuts,badam",protein,579,21,22,50
+walnut,"walnuts,nuts,akhrot",protein,654,15,14,65
+peanut,"peanuts,groundnut,mungfali",protein,567,26,16,49
+cashew,"cashews,nuts,kaju",protein,553,18,30,44
+pistachio,"pistachios,pista",protein,560,20,27,45
+hazelnut,hazelnuts,protein,628,15,17,61
+pumpkin seed,"pumpkin seeds,kaddu ke beej",protein,559,30,11,49
+sunflower seed,"sunflower seeds,surajmukhi ke beej",protein,584,21,20,51
+sesame seed,"sesame seeds,til",protein,573,18,23,50
+avocado,avocados,fat,160,2,9,15
+olive oil,"olive oil,extra virgin olive oil",fat,884,0,0,100
+coconut oil,"coconut oil,refined coconut oil,nariyal tel",fat,862,0,0,100
+butter oil,"butter oil,clarified butter,ghee",fat,900,0,0,100
+sunflower oil,"sunflower oil,surajmukhi tel",fat,884,0,0,100
+canola oil,"canola oil,rapeseed oil",fat,884,0,0,100
+mustard oil,"mustard oil,sarson ka tel",fat,884,0,0,100
+groundnut oil,"groundnut oil,peanut oil,mungfali tel",fat,884,0,0,100
+sesame oil,"sesame oil,til ka tel",fat,884,0,0,100
+sugar,"sugar,white sugar,chini",grain,387,0,100,0
+jaggery,"jaggery,gur",grain,383,0.4,98,0.1
+honey,honey,shahad,grain,304,0.3,82,0
+salt,salt,namak,grain,0,0,0,0
+turmeric,"turmeric powder,haldi",grain,354,7.8,65,9.9
+cumin,"cumin seeds,jeera",grain,375,18,44,22
+coriander seed,"coriander seeds,dhaniya seeds",grain,298,12,55,18
+black pepper,"black pepper,kali mirch",grain,251,10,64,3.3
+cardamom,"cardamom,elaichi",grain,311,11,68,6.7
+cinnamon,"cinnamon,dalchini",grain,247,4,81,1.2
+clove,"cloves,laung",grain,274,6,66,13
+bay leaf,"bay leaves,tej patta",grain,313,7.6,75,8.4
+red chili powder,"red chili powder,lal mirch powder",grain,324,12,56,17
+garam masala,garam masala powder,grain,325,11,58,14
+tea,"tea leaves,chai patti",grain,1,0,0.3,0
+coffee,"coffee beans,coffee powder",grain,1,0.1,0,0
+cocoa powder,cocoa powder,grain,228,20,58,14
+dark chocolate,"dark chocolate,bitter chocolate",grain,546,7.8,46,31
+milk chocolate,milk chocolate,grain,535,7.7,59,30
+vanilla extract,vanilla essence,grain,288,0.1,13,0.1
+baking powder,baking powder,grain,53,0.1,28,0.1
+baking soda,baking soda,grain,0,0,0,0
+vinegar,"vinegar,sirka",grain,18,0,0.9,0
+lemon juice,"lemon juice,nimbu ka ras",grain,22,0.4,7,0.2
+tamarind,"tamarind,imli",grain,239,2.8,63,0.6
+coconut milk,"coconut milk,nariyal ka doodh",dairy,230,2.3,6,24
+soy milk,soy milk,dairy,33,2.9,1.8,1.8
+almond milk,almond milk,dairy,17,0.6,1.5,1.2

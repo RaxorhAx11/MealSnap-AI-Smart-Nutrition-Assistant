@@ -1,0 +1,14 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+opencv-python==4.8.1.78
+easyocr==1.7.0
+numpy<2.0
+pillow
+rapidfuzz==3.9.7
+pandas==2.1.4
+SQLAlchemy>=2.0
+passlib[bcrypt]>=1.7
+bcrypt<4.1
+email-validator>=2.0
+PyJWT>=2.8

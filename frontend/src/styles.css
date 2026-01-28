@@ -1,0 +1,1005 @@
+/* Global minimalist UI system */
+
+:root {
+  /* Colors: soft blue + neutral gray */
+  --color-bg: #f4f6fb;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f9fafb;
+  --color-primary: #2563eb;
+  --color-primary-soft: #e0ecff;
+  --color-border: #e5e7eb;
+  --color-border-subtle: #e5e7eb;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+
+  /* Layout */
+  --app-max-width: 1120px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+
+  /* Radius & shadows */
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.06);
+
+  /* Typography */
+  --font-family-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family-sans);
+  background: linear-gradient(180deg, #f5f7fc 0%, #eef2f9 40%, #edf2ff 100%);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+/* Global layout wrapper */
+
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-4);
+}
+
+.app-shell {
+  width: 100%;
+  max-width: var(--app-max-width);
+  margin: 0 auto;
+}
+
+@media (max-width: 640px) {
+  .app-root {
+    padding: var(--space-3);
+  }
+}
+
+/* Generic card + surface styles */
+
+.card {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-soft);
+}
+
+.card--subtle {
+  background: var(--color-surface-subtle);
+  box-shadow: none;
+}
+
+/* Typography helpers */
+
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-3);
+}
+
+.page-subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.text-muted {
+  color: var(--color-text-muted);
+}
+
+/* Form elements */
+
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+}
+
+.input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  font-size: 0.95rem;
+  background-color: #ffffff;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08), 0 8px 18px rgba(37, 99, 235, 0.15);
+  background-color: #f9fbff;
+}
+
+.input::placeholder {
+  color: #9ca3af;
+}
+
+/* Buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.7rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease,
+    transform 0.05s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  color: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.25);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  box-shadow: 0 16px 36px rgba(37, 99, 235, 0.32);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.2);
+  transform: translateY(0);
+}
+
+.btn-secondary {
+  background: #ffffff;
+  color: var(--color-text);
+  border-color: var(--color-border);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+}
+
+.btn-secondary:hover {
+  background: #f9fafb;
+}
+
+.btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* Auth pages */
+
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 2 * var(--space-4));
+  padding: var(--space-3);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-soft);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  animation: auth-card-in 260ms ease-out;
+}
+
+.auth-card-header {
+  margin-bottom: var(--space-4);
+}
+
+.auth-card-title {
+  font-size: 1.35rem;
+  font-weight: 650;
+  margin: 0 0 var(--space-1);
+}
+
+.auth-card-subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: var(--space-3);
+}
+
+.form-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #4b5563;
+}
+
+.form-error {
+  margin-top: var(--space-2);
+  font-size: 0.85rem;
+  color: #b91c1c;
+}
+
+.form-success {
+  margin-top: var(--space-2);
+  font-size: 0.85rem;
+  color: #15803d;
+}
+
+.auth-footer {
+  margin-top: var(--space-4);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.link-inline {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.link-inline:hover {
+  text-decoration: underline;
+}
+
+@keyframes auth-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Receipt upload: two-option cards (device upload + camera). Both use the same upload API. */
+
+.receipt-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+}
+
+.receipt-option {
+  background: var(--color-surface-subtle);
+  border: 1px dashed rgba(148, 163, 184, 0.7);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.receipt-option-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  margin: 0 auto var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 1.4rem;
+}
+
+.receipt-option-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.receipt-option-desc {
+  margin: 0 0 var(--space-2);
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.receipt-option-btn {
+  width: 100%;
+}
+
+/* On mobile: stack options, show camera first, and highlight the camera card. */
+@media (max-width: 520px) {
+  .receipt-options {
+    grid-template-columns: 1fr;
+  }
+
+  .receipt-option--camera {
+    order: -1;
+    border-color: rgba(37, 99, 235, 0.4);
+    background: rgba(224, 236, 255, 0.5);
+  }
+}
+
+/* --- Camera scan modal: live preview, instructions, focus overlay, then crop. --- */
+
+.camera-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  /* Mobile-first: preview and crop fill available height. */
+}
+
+.camera-modal-close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  transition: background 0.2s;
+}
+
+.camera-modal-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Live preview: rounded frame, fits mobile. */
+.camera-preview-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+
+.camera-preview-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+/* Overlay: instructions at top, focus shades, frame, capture at bottom. */
+.camera-preview-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.camera-preview-overlay .camera-capture-btn {
+  pointer-events: auto;
+  margin: var(--space-4);
+  align-self: center;
+}
+
+.camera-instructions {
+  margin: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.95);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  max-width: 100%;
+}
+
+.camera-instructions span:not(:last-child)::after {
+  content: " · ";
+  margin-left: 0.15rem;
+  opacity: 0.7;
+}
+
+/* Focus shades: dark bands around the center “receipt” frame to direct attention. */
+.camera-focus-shade {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.camera-focus-shade-t {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 20%;
+}
+
+.camera-focus-shade-b {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 20%;
+}
+
+.camera-focus-shade-l {
+  top: 20%;
+  left: 0;
+  width: 10%;
+  height: 60%;
+}
+
+.camera-focus-shade-r {
+  top: 20%;
+  right: 0;
+  width: 10%;
+  height: 60%;
+}
+
+.camera-focus-frame {
+  position: absolute;
+  top: 20%;
+  left: 10%;
+  right: 10%;
+  bottom: 20%;
+  border: 2px dashed rgba(255, 255, 255, 0.75);
+  border-radius: 10px;
+  pointer-events: none;
+}
+
+.camera-capture-btn {
+  flex-shrink: 0;
+}
+
+/* Crop editor: image with overlay and draggable crop frame. */
+.camera-crop-wrap {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 85vh;
+}
+
+.crop-editor {
+  position: relative;
+  width: 100%;
+  max-height: 60vh;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: #000;
+}
+
+.crop-editor img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Shade outside crop area (4 bands). */
+.crop-shade {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.crop-shade-t {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.crop-shade-b {
+  left: 0;
+  right: 0;
+}
+
+.crop-shade-l,
+.crop-shade-r {
+  top: 0;
+}
+
+/* Crop frame: dashed border, corners are handles; interior is draggable to move. */
+.crop-frame {
+  position: absolute;
+  border: 2px dashed rgba(255, 255, 255, 0.9);
+  box-sizing: border-box;
+  cursor: move;
+  touch-action: none;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.5);
+  cursor: nwse-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.crop-handle-nw { top: -2px;  left: -2px;  cursor: nwse-resize; }
+.crop-handle-ne { top: -2px;  right: -2px; cursor: nesw-resize; }
+.crop-handle-sw { bottom: -2px; left: -2px;  cursor: nesw-resize; }
+.crop-handle-se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+
+.crop-frame-body {
+  position: absolute;
+  inset: 0;
+  cursor: move;
+  touch-action: none;
+}
+
+.camera-crop-actions {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .camera-preview-wrap,
+  .camera-crop-wrap {
+    max-width: 100%;
+  }
+
+  .crop-handle {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* Simple utility layout */
+
+.stack-md {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.stack-lg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Review items layout */
+
+.review-items {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.review-items-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.review-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.review-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.review-table th,
+.review-table td {
+  padding: 0.5rem 0.4rem;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.review-table thead th {
+  font-weight: 500;
+  color: #6b7280;
+  background-color: #f9fafb;
+}
+
+.review-name-input {
+  width: 100%;
+  min-height: 2.4rem;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.btn-icon {
+  border-radius: 999px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+}
+
+.btn-icon:hover {
+  background: #f9fafb;
+}
+
+.review-suggestion-btn {
+  white-space: normal;
+  text-align: left;
+}
+
+.btn-icon-danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.btn-icon-danger:hover {
+  background: #fee2e2;
+}
+
+.review-cards {
+  display: none;
+}
+
+.review-card {
+  padding: var(--space-3);
+}
+
+.review-card-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.review-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #4b5563;
+}
+
+.review-chip span {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #e5edff;
+  color: #1d4ed8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+}
+
+.review-status {
+  font-size: 0.8rem;
+}
+
+.review-status.valid {
+  color: #15803d;
+}
+
+.review-status.invalid {
+  color: #b91c1c;
+}
+
+@media (max-width: 768px) {
+  .review-table-wrapper {
+    display: none;
+  }
+
+  .review-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .review-items {
+    max-height: none;
+  }
+}
+
+/* Meal plan layout */
+
+.mealplan-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.mealplan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.mealplan-table th,
+.mealplan-table td {
+  padding: 0.75rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+.mealplan-table thead th {
+  font-weight: 600;
+  color: #374151;
+  background-color: #f9fafb;
+}
+
+.mealplan-cards {
+  display: none;
+}
+
+.mealplan-card {
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 1rem;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.04);
+}
+
+.mealplan-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.mealplan-day {
+  font-weight: 600;
+  color: #111827;
+}
+
+.mealplan-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.mealplan-status-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.mealplan-status-deficit {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.mealplan-status-deficit .mealplan-status-pill-dot {
+  background: #f59e0b;
+}
+
+.mealplan-status-met {
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.mealplan-status-met .mealplan-status-pill-dot {
+  background: #16a34a;
+}
+
+.mealplan-status-excess {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.mealplan-status-excess .mealplan-status-pill-dot {
+  background: #ef4444;
+}
+
+.mealplan-status-na {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.mealplan-status-na .mealplan-status-pill-dot {
+  background: #9ca3af;
+}
+
+.mealplan-macros {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.mealplan-meals {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: #4b5563;
+}
+
+@media (max-width: 768px) {
+  .mealplan-table-wrapper {
+    display: none;
+  }
+
+  .mealplan-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+}
+
+/* Dashboard header responsiveness */
+
+@media (max-width: 768px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .dashboard-header-nav {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+}
+
+/* Purchase suggestions */
+
+.purchase-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.purchase-card {
+  border-radius: 14px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.purchase-card-icon {
+  font-size: 1.2rem;
+  margin-top: 0.05rem;
+}
+
+.purchase-card-body {
+  flex: 1;
+}
+
+.purchase-card-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #14532d;
+}
+
+.purchase-card-reason {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #166534;
+}
+
+.purchase-card-benefit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.purchase-card-benefit-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+@media (max-width: 640px) {
+  .purchase-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Dashboard weekly plan mobile cards */
+
+.dashboard-weekly-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.dashboard-weekly-cards {
+  display: none;
+}
+
+.dashboard-weekly-card {
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 0.85rem 0.9rem;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.04);
+}
+
+.dashboard-weekly-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.dashboard-weekly-day {
+  font-weight: 600;
+  color: #111827;
+}
+
+.dashboard-weekly-metrics {
+  font-size: 0.82rem;
+  color: #6b7280;
+}
+
+.dashboard-weekly-meals {
+  margin-top: 0.45rem;
+  font-size: 0.88rem;
+  color: #4b5563;
+}
+
+@media (max-width: 768px) {
+  .dashboard-weekly-table-wrapper {
+    display: none;
+  }
+
+  .dashboard-weekly-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+}
+
