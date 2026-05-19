@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { fetchDashboardData, saveWeight, fetchDashboardNutrition, fetchPurchaseSuggestions } from '../services/api';
+import { useNavigate } from 'react-router-dom';
+import { fetchDashboardData, addWeightLog, fetchDashboardNutrition, fetchPurchaseSuggestions } from '../services/api';
 import { TOKEN_KEY } from './ProtectedRoute';
 
 import {
@@ -30,15 +30,6 @@ ChartJS.register(
 function fmtNumber(n, digits = 0) {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
   return n.toFixed(digits);
-}
-
-function isoToday() {
-  const d = new Date();
-  // local date -> YYYY-MM-DD (no timezone shifting)
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 function lastN(arr, n) {
@@ -155,7 +146,9 @@ export default function Dashboard() {
     const p = latestNutrition?.protein ?? 0;
     const c = latestNutrition?.carbs ?? 0;
     const f = latestNutrition?.fats ?? 0;
+    const total = Number(p) + Number(c) + Number(f);
     return {
+      total,
       data: {
         labels: ['Protein (g)', 'Carbs (g)', 'Fats (g)'],
         datasets: [
@@ -169,6 +162,7 @@ export default function Dashboard() {
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           legend: { position: 'bottom' },
           tooltip: { enabled: true },
@@ -214,14 +208,14 @@ export default function Dashboard() {
   const handleSaveWeight = async () => {
     setWeightSaveError(null);
     const parsed = Number(weightInput);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      setWeightSaveError('Enter a valid weight in kg (e.g. 72.5)');
+    if (!Number.isFinite(parsed) || parsed < 30 || parsed > 300) {
+      setWeightSaveError('Enter a realistic weight in kg (30–300). Example: 72.4');
       return;
     }
 
     try {
       setWeightSaving(true);
-      await saveWeight({ date: isoToday(), weight: parsed });
+      await addWeightLog({ weight_kg: parsed, note: 'Dashboard entry' });
       setWeightInput('');
       await load();
     } catch (e) {
@@ -230,84 +224,6 @@ export default function Dashboard() {
       setWeightSaving(false);
     }
   };
-
-  // Weekly meal plan (read-only): render if backend provides it, else show placeholder.
-  // Reads from stored data only - does not regenerate
-  // NEW FORMAT: Uses daily meal plans instead of breakfast/lunch/dinner
-  const weeklyPlanDays = useMemo(() => {
-    const plan =
-      dashboard?.weekly_meal_plan ??
-      dashboard?.meal_plan ??
-      dashboard?.mealPlan ??
-      dashboard?.plan;
-    
-    if (!plan) return [];
-    
-    // Extract days array from the plan structure
-    const days = plan?.days ?? plan?.Days ?? null;
-    if (!Array.isArray(days)) return [];
-    
-    // Map to new format - handle both old and new formats
-    return days.map((day, idx) => {
-      // Check if this is the new format (has daily_meal_plan)
-      if (day.daily_meal_plan && Array.isArray(day.daily_meal_plan)) {
-        // New format: daily meal plan
-        return {
-          day: day.day || `Day ${idx + 1}`,
-          daily_meal_plan: day.daily_meal_plan,
-          total_nutrition_today: day.total_nutrition_today || {
-            calories: 0,
-            protein: 0,
-            carbs: 0,
-            fats: 0
-          },
-          daily_target: day.daily_target || {
-            target_calories: 2000,
-            status: 'N/A'
-          }
-        };
-      }
-      
-      // Old format: breakfast/lunch/dinner (for backward compatibility)
-      const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-      const dayNum = typeof day.day === 'number' ? day.day : idx + 1;
-      const dayName = dayNum >= 1 && dayNum <= 7 ? DAY_NAMES[dayNum - 1] : DAY_NAMES[idx] || `Day ${dayNum}`;
-      
-      const normalizeMeal = (meal) => {
-        if (!meal) return '';
-        if (Array.isArray(meal)) return meal.join(', ');
-        if (typeof meal === 'string') return meal;
-        return String(meal);
-      };
-      
-      // Convert old format to new format for display
-      const allMeals = [
-        normalizeMeal(day.breakfast),
-        normalizeMeal(day.lunch),
-        normalizeMeal(day.dinner)
-      ].filter(m => m);
-      
-      const calories = day.estimated_calories ?? day.calories ?? 0;
-      const target = 2000;
-      const status = calories < target * 0.9 ? 'Deficit' : 
-                     calories > target * 1.1 ? 'Excess' : 'Met';
-      
-      return {
-        day: dayName,
-        daily_meal_plan: allMeals,
-        total_nutrition_today: {
-          calories: calories,
-          protein: 0, // Old format doesn't have macros
-          carbs: 0,
-          fats: 0
-        },
-        daily_target: {
-          target_calories: target,
-          status: status
-        }
-      };
-    });
-  }, [dashboard]);
 
   const styles = {
     page: {
@@ -332,6 +248,11 @@ export default function Dashboard() {
     grid2: {
       display: 'grid',
       gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+      gap: 12,
+    },
+    gridActions: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
       gap: 12,
     },
     grid4: {
@@ -414,6 +335,15 @@ export default function Dashboard() {
 
   return (
     <div style={styles.page}>
+      <section className="dashboard-hero" aria-label="Project overview">
+        <div className="dashboard-hero-inner">
+          <h1 className="dashboard-hero-title">AI Nutrition Advisor – Smart Meal Planning from Your Grocery Receipts</h1>
+          <p className="dashboard-hero-subtitle">
+            MealSnap analyzes your grocery receipts, identifies food items, and generates balanced meal plans with smart recommendations to help you eat healthier.
+          </p>
+        </div>
+      </section>
+
       <div style={styles.header} className="dashboard-header">
         <div>
           <h1 style={{ margin: 0 }}>Dashboard</h1>
@@ -423,9 +353,6 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={styles.nav} className="dashboard-header-nav">
-          <Link to="/dashboard">Dashboard</Link>
-          <Link to="/meal-plan">Meal Plan</Link>
-          <Link to="/upload">Upload</Link>
           <button type="button" style={styles.btnSecondary} onClick={handleLogout}>
             Logout
           </button>
@@ -438,6 +365,74 @@ export default function Dashboard() {
           <strong>Error:</strong> {error}
         </div>
       )}
+
+      {/* Quick actions: each major module has a visible button */}
+      <div style={{ marginTop: 12 }}>
+        <h2 style={styles.sectionTitle}>Quick actions</h2>
+        <div style={styles.gridActions}>
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Upload / Scan Receipt</h3>
+            <p style={styles.small}>Scan a new receipt to detect items and analyze nutrition.</p>
+            <button style={styles.btn} onClick={() => navigate('/upload')}>
+              Upload Receipt
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Nutrition Summary</h3>
+            <p style={styles.small}>View your latest stored nutrition totals and macros.</p>
+            <button style={styles.btnSecondary} onClick={() => navigate('/nutrition-summary')}>
+              View Nutrition Summary
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Weekly Meal Plan</h3>
+            <p style={styles.small}>Generate or review your meal plan.</p>
+            <button style={styles.btnSecondary} onClick={() => navigate('/meal-plan')}>
+              Generate Meal Plan
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Weight Tracker</h3>
+            <p style={styles.small}>Update today’s weight and track progress.</p>
+            <button
+              style={styles.btnSecondary}
+              onClick={() => {
+                const el = document.getElementById('weight-tracker-card');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+            >
+              Update Weight
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Profile / Personalization</h3>
+            <p style={styles.small}>Set your target weight, activity level, and goals.</p>
+            <button style={styles.btnSecondary} onClick={() => navigate('/profile')}>
+              Edit Profile
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Grocery Recommendations</h3>
+            <p style={styles.small}>See what to buy next based on your nutrition gaps.</p>
+            <button style={styles.btnSecondary} onClick={() => navigate('/recommendations')}>
+              View Recommendations
+            </button>
+          </div>
+
+          <div style={styles.card}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: 15 }}>Receipt History</h3>
+            <p style={styles.small}>Review past scans and daily totals by receipt date.</p>
+            <button style={styles.btnSecondary} onClick={() => navigate('/receipt-history')}>
+              View Receipt History
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Section 1: Nutrition Summary Cards */}
       {/* 
@@ -514,12 +509,23 @@ export default function Dashboard() {
         {/* Section 2: Macronutrient Chart */}
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Macronutrients</h2>
-          {latestNutrition ? <Pie data={macroPie.data} options={macroPie.options} /> : <p>No nutrition data yet.</p>}
+          {!latestNutrition ? (
+            <p>No nutrition data yet.</p>
+          ) : macroPie.total <= 0 ? (
+            <p style={styles.small}>
+              No macronutrient values yet (Protein/Carbs/Fats are all 0). Upload a receipt with recognized items to
+              generate macros.
+            </p>
+          ) : (
+            <div style={{ height: 240 }}>
+              <Pie data={macroPie.data} options={macroPie.options} />
+            </div>
+          )}
           <div style={styles.small}>Source: backend dashboard endpoint.</div>
         </div>
 
         {/* Section 4: Weight Tracker + chart */}
-        <div style={styles.card}>
+        <div style={styles.card} id="weight-tracker-card">
           <h2 style={styles.sectionTitle}>Weight tracker</h2>
           <div style={styles.row}>
             <input
@@ -545,145 +551,6 @@ export default function Dashboard() {
             </div>
           ) : (
             <p style={styles.small}>No weight entries yet.</p>
-          )}
-        </div>
-      </div>
-
-      {/* Section 3: Weekly Meal Plan (Read-only) */}
-      {/* 
-        This section displays the saved meal plan from the database.
-        Data comes from /dashboard endpoint (stored data only, not regenerated).
-        Plan is saved when generated on the Meal Plan page.
-        NEW FORMAT: Shows daily meal plans with nutrition totals and target status.
-      */}
-      <div style={{ marginTop: 12 }}>
-        <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Weekly meal plan</h2>
-          {weeklyPlanDays.length ? (
-            <>
-              <p style={styles.small}>
-                This meal plan is read from stored data in the database. Generate a new plan on the Meal Plan page to update it.
-              </p>
-              <p style={{ ...styles.small, marginBottom: 12, fontStyle: 'italic', color: '#6b7280' }}>
-                Daily targets are approximate and based on general guidelines.
-              </p>
-              <div className="dashboard-weekly-table-wrapper">
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Day</th>
-                      <th style={styles.th}>Daily Meal Plan</th>
-                      <th style={styles.th}>Total Nutrition Today</th>
-                      <th style={styles.th}>Daily Target</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {weeklyPlanDays.map((d) => {
-                      const nutrition = d.total_nutrition_today || {};
-                      const target = d.daily_target || {};
-                      const statusColor =
-                        target.status === 'Met'
-                          ? '#16a34a'
-                          : target.status === 'Deficit'
-                            ? '#f59e0b'
-                            : target.status === 'Excess'
-                              ? '#ef4444'
-                              : '#6b7280';
-
-                      return (
-                        <tr key={String(d.day)}>
-                          <td style={styles.td}>
-                            <strong>{String(d.day)}</strong>
-                          </td>
-                          <td style={styles.td}>
-                            {Array.isArray(d.daily_meal_plan) && d.daily_meal_plan.length > 0
-                              ? d.daily_meal_plan.join(', ')
-                              : '—'}
-                          </td>
-                          <td style={styles.td}>
-                            {typeof nutrition.calories === 'number' ? (
-                              <div>
-                                <strong>{Math.round(nutrition.calories)} kcal</strong>
-                                {typeof nutrition.protein === 'number' && nutrition.protein > 0 && (
-                                  <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
-                                    P: {Math.round(nutrition.protein)}g, C: {Math.round(nutrition.carbs)}g, F:{' '}
-                                    {Math.round(nutrition.fats)}g
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                          <td style={styles.td}>
-                            {typeof target.target_calories === 'number' ? (
-                              <div>
-                                <strong>{target.target_calories} kcal</strong>
-                                {target.status && (
-                                  <div
-                                    style={{
-                                      fontSize: '12px',
-                                      color: statusColor,
-                                      marginTop: '4px',
-                                      fontWeight: '500',
-                                    }}
-                                  >
-                                    ({target.status})
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="dashboard-weekly-cards">
-                {weeklyPlanDays.map((d) => {
-                  const nutrition = d.total_nutrition_today || {};
-                  const target = d.daily_target || {};
-                  return (
-                    <div key={String(d.day)} className="dashboard-weekly-card">
-                      <div className="dashboard-weekly-card-header">
-                        <div className="dashboard-weekly-day">{String(d.day)}</div>
-                        {typeof target.target_calories === 'number' && (
-                          <div className="dashboard-weekly-metrics">
-                            Target: {target.target_calories} kcal{target.status ? ` • ${target.status}` : ''}
-                          </div>
-                        )}
-                      </div>
-                      <div className="dashboard-weekly-metrics">
-                        {typeof nutrition.calories === 'number'
-                          ? `${Math.round(nutrition.calories)} kcal`
-                          : 'No nutrition data'}
-                      </div>
-                      <div className="dashboard-weekly-meals">
-                        {Array.isArray(d.daily_meal_plan) && d.daily_meal_plan.length > 0
-                          ? d.daily_meal_plan.join(', ')
-                          : 'No meals listed for this day.'}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <div>
-              <p style={{ marginTop: 0 }}>
-                No weekly meal plan found in stored data.
-              </p>
-              <p style={styles.small}>
-                Generate a meal plan on the Meal Plan page to save it here. The plan will be automatically saved and displayed on the dashboard.
-              </p>
-              <button style={styles.btnSecondary} onClick={() => navigate('/meal-plan')}>
-                Go to Meal Plan
-              </button>
-            </div>
           )}
         </div>
       </div>

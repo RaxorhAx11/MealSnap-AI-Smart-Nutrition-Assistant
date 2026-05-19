@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { analyzeNutrition } from '../services/api';
 
+const LS_CONFIRMED_ITEMS_KEY = 'mealsnap_confirmed_items_v1';
+
 export default function ReceiptNextStep() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -25,6 +27,23 @@ export default function ReceiptNextStep() {
     try {
       const response = await analyzeNutrition(items);
       if (response.summary) {
+        // Persist the latest confirmed items so the Meal Plan page can generate an "AI meal plan"
+        // without changing backend APIs.
+        try {
+          const simplified = items
+            .map((it) => ({ name: String(it?.name ?? '').trim() }))
+            .filter((it) => it.name.length > 0);
+          localStorage.setItem(
+            LS_CONFIRMED_ITEMS_KEY,
+            JSON.stringify({
+              savedAt: new Date().toISOString(),
+              items: simplified,
+            })
+          );
+        } catch {
+          // ignore storage issues (private browsing / quota)
+        }
+
         // Navigate to NutritionSummary with the summary data
         navigate('/nutrition-summary', {
           state: {

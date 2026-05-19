@@ -12,16 +12,32 @@ const DAY_ORDER = [
   'Sunday',
 ];
 
-function normalizeMeal(value) {
+function normalizeMealItems(value) {
   if (value == null) return [];
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === 'string') return value.trim() ? [value] : [];
-  if (typeof value === 'object') {
-    // e.g. { name, calories } or other structured meal objects
-    if (typeof value.name === 'string') return [value.name];
-    return [JSON.stringify(value)];
+  if (Array.isArray(value)) return value.filter(Boolean).map((v) => (typeof v === 'string' ? { name: v } : v));
+  if (typeof value === 'string') return value.trim() ? [{ name: value.trim() }] : [];
+  if (typeof value === 'object') return [value];
+  return [{ name: String(value) }];
+}
+
+function formatPortion(item) {
+  const q = item?.portion?.quantity;
+  const u = item?.portion?.unit;
+  if (typeof q === 'number' && Number.isFinite(q) && typeof u === 'string' && u.trim()) {
+    return `${q} ${u}`.trim();
   }
-  return [String(value)];
+  return null;
+}
+
+function formatMacros(item) {
+  const m = item?.macros;
+  if (!m || typeof m !== 'object') return null;
+  const cal = typeof m.calories === 'number' ? Math.round(m.calories) : null;
+  const p = typeof m.protein === 'number' ? Math.round(m.protein) : null;
+  const c = typeof m.carbs === 'number' ? Math.round(m.carbs) : null;
+  const f = typeof m.fats === 'number' ? Math.round(m.fats) : null;
+  if (cal == null) return null;
+  return { cal, p, c, f };
 }
 
 function getCalories(dayObj) {
@@ -69,6 +85,41 @@ function normalizeMealPlan(apiResponse) {
   return daysArray.map((d, idx) => {
     const dayName = d?.day ?? d?.dayName ?? d?.name ?? DAY_ORDER[idx] ?? `Day ${idx + 1}`;
 
+    // v3 format: breakfast/lunch/dinner arrays of structured items
+    if (Array.isArray(d?.breakfast) || Array.isArray(d?.lunch) || Array.isArray(d?.dinner)) {
+      const breakfast = normalizeMealItems(d?.breakfast);
+      const lunch = normalizeMealItems(d?.lunch);
+      const dinner = normalizeMealItems(d?.dinner);
+      const calories = getCalories(d);
+      const target = typeof d?.calorie_target === 'number' ? d.calorie_target : 2000;
+      const status =
+        d?.status ||
+        d?.daily_target?.status ||
+        (typeof calories === 'number'
+          ? calories < target * 0.9
+            ? 'Deficit'
+            : calories > target * 1.1
+              ? 'Excess'
+              : 'Near Target'
+          : 'N/A');
+
+      return {
+        day: String(dayName),
+        breakfast,
+        lunch,
+        dinner,
+        daily_meal_plan: [],
+        total_nutrition_today: d?.total_macros ?? d?.total_nutrition_today ?? {
+          calories: typeof calories === 'number' ? calories : 0,
+          protein: 0,
+          carbs: 0,
+          fats: 0,
+        },
+        daily_target: { target_calories: target, status },
+        calories: typeof calories === 'number' ? calories : null,
+      };
+    }
+
     // NEW format: daily_meal_plan, total_nutrition_today, daily_target
     if (d?.daily_meal_plan && Array.isArray(d.daily_meal_plan)) {
       return {
@@ -93,10 +144,12 @@ function normalizeMealPlan(apiResponse) {
     }
 
     // OLD format: breakfast, lunch, dinner
-    const breakfast = normalizeMeal(d?.breakfast);
-    const lunch = normalizeMeal(d?.lunch);
-    const dinner = normalizeMeal(d?.dinner);
-    const allMeals = [...breakfast, ...lunch, ...dinner];
+    const breakfast = normalizeMealItems(d?.breakfast);
+    const lunch = normalizeMealItems(d?.lunch);
+    const dinner = normalizeMealItems(d?.dinner);
+    const allMeals = [...breakfast, ...lunch, ...dinner]
+      .map((x) => (typeof x === 'string' ? x : x?.name))
+      .filter(Boolean);
     const calories = getCalories(d);
     const target = 2000;
     const status =
@@ -141,14 +194,15 @@ function formatErrorMessage(e) {
 
 /** Get all meal items for a day (daily_meal_plan or breakfast+lunch+dinner). */
 function getAllMealsForDay(day) {
-  if (Array.isArray(day.daily_meal_plan) && day.daily_meal_plan.length > 0) {
-    return day.daily_meal_plan;
-  }
-  return [
-    ...(day.breakfast || []),
-    ...(day.lunch || []),
-    ...(day.dinner || []),
-  ];
+  const b = Array.isArray(day.breakfast) ? day.breakfast : [];
+  const l = Array.isArray(day.lunch) ? day.lunch : [];
+  const d = Array.isArray(day.dinner) ? day.dinner : [];
+  const structured = [...b, ...l, ...d]
+    .map((x) => (typeof x === 'string' ? x : x?.name))
+    .filter(Boolean);
+  if (structured.length > 0) return structured;
+  if (Array.isArray(day.daily_meal_plan) && day.daily_meal_plan.length > 0) return day.daily_meal_plan;
+  return [];
 }
 
 /**
@@ -273,7 +327,6 @@ export default function MealPlan() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [raw, setRaw] = useState(null);
-  const [isButtonHovered, setIsButtonHovered] = useState(false);
   const [purchaseSuggestions, setPurchaseSuggestions] = useState(null);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState(null);
@@ -304,9 +357,8 @@ export default function MealPlan() {
         setLoading(true);
         setError(null);
         setRaw(null);
-        
-        // Call /generate-meal-plan endpoint - backend will automatically
-        // fetch the latest confirmed items from the database
+
+        // Generate backend meal plan (uses confirmed items + nutrition gaps + user calorie target).
         const data = await generateMealPlan({});
         setRaw(data);
       } catch (err) {
@@ -350,9 +402,25 @@ export default function MealPlan() {
   const days = useMemo(() => {
     if (!raw) return [];
     const normalized = normalizeMealPlan(raw);
+    const looksLikeDayLabels = normalized.some((d) => String(d?.day || '').toLowerCase().startsWith('day-'));
+    if (looksLikeDayLabels) return normalized;
     const byName = new Map(normalized.map((d) => [String(d.day).toLowerCase(), d]));
     const ordered = DAY_ORDER.map((n) => byName.get(n.toLowerCase())).filter(Boolean);
     return ordered.length ? ordered : normalized;
+  }, [raw]);
+
+  const addSuggestions = useMemo(() => {
+    const maybePlan = raw?.plan ?? raw;
+    const daysArray = Array.isArray(maybePlan) ? maybePlan : Array.isArray(maybePlan?.days) ? maybePlan.days : [];
+    const first = Array.isArray(daysArray) && daysArray.length > 0 ? daysArray[0] : null;
+    const suggestions = first?.suggested_additions;
+    if (!Array.isArray(suggestions)) return [];
+    return suggestions
+      .map((s) => ({
+        food: typeof s?.food === 'string' ? s.food : null,
+        nutrition_benefit: typeof s?.nutrition_benefit === 'string' ? s.nutrition_benefit : null,
+      }))
+      .filter((x) => x.food && x.nutrition_benefit);
   }, [raw]);
 
   // Generate recommendations based on the meal plan
@@ -360,370 +428,111 @@ export default function MealPlan() {
     return generateRecommendations(days);
   }, [days]);
 
-  // Styles for the meal plan UI
-  const styles = {
-    container: {
-      maxWidth: '1200px',
-      margin: '0 auto',
-      padding: '24px',
-      fontFamily: 'var(--font-family-sans, system-ui, -apple-system, Arial, sans-serif)',
-    },
-    title: {
-      fontSize: '28px',
-      fontWeight: 650,
-      color: '#111827',
-      marginBottom: 6,
-      marginTop: 0,
-      letterSpacing: '-0.02em',
-    },
-    subtitle: {
-      fontSize: 14,
-      color: '#6b7280',
-      marginBottom: 24,
-    },
-    loadingContainer: {
-      padding: '40px',
-      textAlign: 'center',
-      fontSize: '18px',
-      color: '#6b7280',
-    },
-    errorContainer: {
-      backgroundColor: '#fef2f2',
-      border: '1px solid #fecaca',
-      borderRadius: '8px',
-      padding: '20px',
-      marginBottom: '24px',
-      color: '#991b1b',
-    },
-    errorTitle: {
-      fontSize: '20px',
-      fontWeight: '600',
-      marginTop: '0',
-      marginBottom: '8px',
-    },
-    tableSection: {
-      marginTop: 20,
-    },
-    tableNote: {
-      fontSize: 13,
-      color: '#6b7280',
-      fontStyle: 'italic',
-      marginBottom: 10,
-      marginTop: 0,
-    },
-    macrosLine: {
-      fontSize: '13px',
-      color: '#6b7280',
-      marginTop: '4px',
-    },
-    emptyState: {
-      textAlign: 'center',
-      padding: '40px',
-      color: '#6b7280',
-      fontSize: '16px',
-    },
-    explanationSection: {
-      backgroundColor: '#f0f9ff',
-      border: '1px solid #bae6fd',
-      borderRadius: 12,
-      padding: 18,
-      marginBottom: 24,
-      marginTop: 8,
-    },
-    explanationTitle: {
-      fontSize: '18px',
-      fontWeight: '600',
-      color: '#0c4a6e',
-      marginTop: '0',
-      marginBottom: '12px',
-    },
-    explanationText: {
-      fontSize: '15px',
-      color: '#075985',
-      lineHeight: '1.6',
-      margin: '0',
-    },
-    recommendationsSection: {
-      marginTop: 32,
-      paddingTop: 24,
-      borderTop: '1px solid #e5e7eb',
-    },
-    recommendationsTitle: {
-      fontSize: '24px',
-      fontWeight: '600',
-      color: '#111827',
-      marginBottom: '16px',
-      marginTop: '0',
-    },
-    recommendationsCard: {
-      backgroundColor: '#f9fafb',
-      border: '1px solid #e5e7eb',
-      borderRadius: '12px',
-      padding: '24px',
-      marginTop: '16px',
-    },
-    recommendationItem: {
-      padding: '16px 0',
-      borderBottom: '1px solid #e5e7eb',
-      fontSize: '15px',
-      color: '#374151',
-      lineHeight: '1.6',
-    },
-    recommendationItemLast: {
-      padding: '16px 0',
-      borderBottom: 'none',
-      fontSize: '15px',
-      color: '#374151',
-      lineHeight: '1.6',
-    },
-    buttonContainer: {
-      marginTop: 32,
-      paddingTop: 24,
-      borderTop: '1px solid #e5e7eb',
-      display: 'flex',
-      justifyContent: 'center',
-    },
-    purchaseSuggestionsSection: {
-      marginTop: '48px',
-      paddingTop: '32px',
-      borderTop: '2px solid #e5e7eb',
-    },
-    purchaseSuggestionsTitle: {
-      fontSize: '24px',
-      fontWeight: '600',
-      color: '#111827',
-      marginBottom: '16px',
-      marginTop: '0',
-    },
-    purchaseSuggestionsCard: {
-      backgroundColor: '#f0fdf4',
-      border: '1px solid #bbf7d0',
-      borderRadius: '12px',
-      padding: '24px',
-      marginTop: '16px',
-    },
-    purchaseSuggestionsMessage: {
-      fontSize: '15px',
-      color: '#166534',
-      lineHeight: '1.6',
-      marginBottom: '16px',
-      marginTop: '0',
-    },
-    purchaseSuggestionsList: {
-      listStyle: 'none',
-      padding: '0',
-      margin: '0',
-    },
-    purchaseSuggestionsItem: {
-      padding: '10px 0',
-      paddingLeft: '24px',
-      position: 'relative',
-      fontSize: '15px',
-      color: '#166534',
-      lineHeight: '1.6',
-    },
-    purchaseSuggestionsBullet: {
-      position: 'absolute',
-      left: '8px',
-      top: '14px',
-      width: '6px',
-      height: '6px',
-      borderRadius: '50%',
-      backgroundColor: '#16a34a',
-    },
-  };
-
   return (
-    <div style={styles.container}>
-      <h1 style={styles.title}>Weekly Meal Plan</h1>
-      <p style={styles.subtitle}>
-        Your personalized meal plan based on confirmed items and nutrition summary
-      </p>
+    <div className="advisor-page">
+      <div className="advisor-header">
+        <div>
+          <h1 className="advisor-title">AI Nutrition Advisor Meal Plan</h1>
+          <p className="advisor-subtitle">
+            Balanced meals built from your grocery receipt items, with smart additions when needed.
+          </p>
+        </div>
+      </div>
 
       {/* Explanation section */}
       {!loading && !error && (
-        <div style={styles.explanationSection}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h2 style={{ ...styles.explanationTitle, marginBottom: 0 }}>How this plan was built</h2>
-            <button
-              onClick={reloadMealPlan}
-              disabled={loading}
-              style={{
-                padding: '8px 16px',
-                borderRadius: '6px',
-                border: '1px solid #0c4a6e',
-                background: '#0c4a6e',
-                color: '#fff',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                fontSize: '14px',
-                fontWeight: '500',
-              }}
-            >
-              {loading ? 'Refreshing...' : 'Refresh Meal Plan'}
+        <div className="advisor-card advisor-explainer">
+          <div className="advisor-explainer-row">
+            <h2 className="advisor-section-title" style={{ margin: 0 }}>How this plan is built</h2>
+            <button type="button" className="btn btn-secondary" onClick={reloadMealPlan} disabled={loading}>
+              Refresh
             </button>
           </div>
-          <p style={styles.explanationText}>
-            This plan is generated from your confirmed items and latest nutrition summary. Each day has a simple
-            daily meal list with estimated calories and macros, compared against a general daily target (e.g. 2000 kcal).
+          <p className="advisor-explainer-text">
+            Your receipt items are prioritized first. Each main meal aims for <strong>carbs + protein</strong>, plus
+            daily <strong>fruits/vegetables</strong>. If a meal is missing a nutrition group, you&apos;ll see suggested
+            additions.
           </p>
         </div>
       )}
 
       {/* Show loading message while generating meal plan */}
       {loading && (
-        <div style={styles.loadingContainer}>
-          Generating meal plan...
-        </div>
+        <div className="advisor-loading">Generating meal plan…</div>
       )}
 
       {/* Error display */}
       {error && (
-        <div style={styles.errorContainer}>
-          <h3 style={styles.errorTitle}>Error</h3>
-          <p>{typeof error === 'string' ? error : formatErrorMessage(error)}</p>
+        <div className="advisor-error">
+          <strong>Error:</strong> {typeof error === 'string' ? error : formatErrorMessage(error)}
         </div>
       )}
 
       {/* Empty state */}
       {!loading && !error && days.length === 0 && (
-        <div style={styles.emptyState}>
-          No meal plan available. Please analyze nutrition first to generate a meal plan.
+        <div className="advisor-empty">
+          No meal plan available yet. Upload a receipt and analyze nutrition first.
         </div>
       )}
 
-      {/* Weekly meal plan table (daily targets format) */}
+      {/* Weekly meal plan (backend v3) */}
       {!loading && !error && days.length > 0 && (
-        <div style={styles.tableSection}>
-          <p style={styles.tableNote}>
-            Daily targets are approximate and based on general guidelines.
-          </p>
-          {/* Desktop/tablet: table view */}
-          <div className="mealplan-table-wrapper">
-            <table className="mealplan-table">
-              <thead>
-                <tr>
-                  <th>Day</th>
-                  <th>Daily meal plan</th>
-                  <th>Total today</th>
-                  <th>Target</th>
-                </tr>
-              </thead>
-              <tbody>
-                {days.map((day) => {
-                  const nutrition = day.total_nutrition_today ?? {};
-                  const target = day.daily_target ?? {};
-                  const status = target.status || 'N/A';
-                  const statusColor =
-                    status === 'Met'
-                      ? '#16a34a'
-                      : status === 'Deficit'
-                        ? '#f59e0b'
-                        : status === 'Excess'
-                          ? '#ef4444'
-                          : '#6b7280';
-                  return (
-                    <tr key={String(day.day)}>
-                      <td>
-                        <strong>{String(day.day)}</strong>
-                      </td>
-                      <td>
-                        {Array.isArray(day.daily_meal_plan) && day.daily_meal_plan.length > 0
-                          ? day.daily_meal_plan.join(', ')
-                          : '—'}
-                      </td>
-                      <td>
-                        {typeof nutrition.calories === 'number' ? (
-                          <div>
-                            <strong>{Math.round(nutrition.calories)} kcal</strong>
-                            {[nutrition.protein, nutrition.carbs, nutrition.fats].some(
-                              (v) => typeof v === 'number',
-                            ) && (
-                              <div style={styles.macrosLine}>
-                                P: {Math.round(nutrition.protein ?? 0)}g, C:{' '}
-                                {Math.round(nutrition.carbs ?? 0)}g, F:{' '}
-                                {Math.round(nutrition.fats ?? 0)}g
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td>
-                        {typeof target.target_calories === 'number' ? (
-                          <div>
-                            <strong>{target.target_calories} kcal</strong>
-                            <div
-                              style={{
-                                ...styles.macrosLine,
-                                color: statusColor,
-                                fontWeight: 500,
-                              }}
-                            >
-                              {status}
-                            </div>
-                          </div>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile: stacked cards */}
-          <div className="mealplan-cards">
+        <div className="advisor-section">
+          <h2 className="advisor-section-title">3-day meal plan</h2>
+          <div className="advisor-day-grid">
             {days.map((day) => {
-              const nutrition = day.total_nutrition_today ?? {};
-              const target = day.daily_target ?? {};
-              const status = target.status || 'N/A';
-              const statusClass =
-                status === 'Met'
-                  ? 'mealplan-status-met'
-                  : status === 'Deficit'
-                    ? 'mealplan-status-deficit'
-                    : status === 'Excess'
-                      ? 'mealplan-status-excess'
-                      : 'mealplan-status-na';
+              const dayCalories = day?.total_nutrition_today?.calories ?? day?.calories;
+              const status = day?.daily_target?.status ?? '—';
+
+              const renderMeal = (title, items) => (
+                <div className="advisor-meal-card">
+                  <div className="advisor-meal-title">{title}</div>
+                  {Array.isArray(items) && items.length > 0 ? (
+                    <ul className="advisor-bullets" style={{ marginTop: 8 }}>
+                      {items.map((it, idx) => {
+                        const name = typeof it === 'string' ? it : it?.name;
+                        const portion = formatPortion(it);
+                        const macros = formatMacros(it);
+                        const why = it?.why;
+                        return (
+                          <li key={`${title}-${idx}-${name || 'item'}`}>
+                            <div>
+                              <strong>{name || '—'}</strong>
+                              {portion ? ` (${portion})` : ''}
+                              {macros ? ` → ${macros.cal} kcal` : ''}
+                              {macros ? (
+                                <span className="text-muted">
+                                  {`  •  P ${macros.p ?? 0}g  C ${macros.c ?? 0}g  F ${macros.f ?? 0}g`}
+                                </span>
+                              ) : null}
+                            </div>
+                            {why?.nutrition_benefit ? (
+                              <div className="text-muted" style={{ marginTop: 4 }}>
+                                {why?.nutrition_benefit ? <div><strong>Benefit:</strong> {why.nutrition_benefit}</div> : null}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div className="text-muted">—</div>
+                  )}
+                </div>
+              );
 
               return (
-                <div key={String(day.day)} className="mealplan-card">
-                  <div className="mealplan-card-header">
-                    <div className="mealplan-day">{String(day.day)}</div>
-                    <div className={`mealplan-status-pill ${statusClass}`}>
-                      <span className="mealplan-status-pill-dot" />
-                      <span>{status}</span>
+                <div key={String(day.day)} className="advisor-day-card">
+                  <div className="advisor-day-header">
+                    <div className="advisor-day-title">{String(day.day)}</div>
+                    <div className="advisor-day-badge">
+                      {typeof dayCalories === 'number' ? `${Math.round(dayCalories)} kcal` : '—'} • {status}
                     </div>
                   </div>
-                  <div className="mealplan-macros">
-                    {typeof nutrition.calories === 'number' ? (
-                      <>
-                        <strong>{Math.round(nutrition.calories)} kcal</strong>
-                        {[nutrition.protein, nutrition.carbs, nutrition.fats].some(
-                          (v) => typeof v === 'number',
-                        ) && (
-                          <>
-                            {'  •  '}
-                            P: {Math.round(nutrition.protein ?? 0)}g, C:{' '}
-                            {Math.round(nutrition.carbs ?? 0)}g, F:{' '}
-                            {Math.round(nutrition.fats ?? 0)}g
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      'No nutrition data'
-                    )}
-                    {typeof target.target_calories === 'number' && (
-                      <>  • Target: {target.target_calories} kcal</>
-                    )}
-                  </div>
-                  <div className="mealplan-meals">
-                    {Array.isArray(day.daily_meal_plan) && day.daily_meal_plan.length > 0
-                      ? day.daily_meal_plan.join(', ')
-                      : 'No meals listed for this day.'}
+                  <div className="advisor-meal-grid">
+                    {renderMeal('Breakfast', day.breakfast)}
+                    {renderMeal('Lunch', day.lunch)}
+                    {renderMeal('Dinner', day.dinner)}
                   </div>
                 </div>
               );
@@ -732,37 +541,48 @@ export default function MealPlan() {
         </div>
       )}
 
-      {/* Recommendations Section */}
-      {!loading && !error && days.length > 0 && recommendations.length > 0 && (
-        <div style={styles.recommendationsSection}>
-          <h2 style={styles.recommendationsTitle}>Meal Plan Recommendations</h2>
-          <div style={styles.recommendationsCard}>
-            {recommendations.map((rec, index) => (
-              <div
-                key={index}
-                style={
-                  index === recommendations.length - 1
-                    ? styles.recommendationItemLast
-                    : styles.recommendationItem
-                }
-              >
-                {rec}
-              </div>
-            ))}
+      {/* What to add next + what you get */}
+      {!loading && !error && addSuggestions.length > 0 && (
+        <div className="advisor-section">
+          <h2 className="advisor-section-title">What to add next (and what you get)</h2>
+          <div className="advisor-card">
+            <div className="purchase-list">
+              {addSuggestions.map((s, idx) => (
+                <div key={`${s.food}-${idx}`} className="purchase-card">
+                  <div className="purchase-card-body">
+                    <p className="purchase-card-title">{s.food}</p>
+                    <div className="purchase-card-benefit">
+                      <span className="purchase-card-benefit-dot" />
+                      <span>{s.nutrition_benefit}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Purchase Suggestions Section */}
+      {/* Recommendations Section */}
+      {!loading && !error && days.length > 0 && recommendations.length > 0 && (
+        <div className="advisor-section">
+          <h2 className="advisor-section-title">Nutrition recommendations</h2>
+          <div className="advisor-card">
+            <ul className="advisor-bullets">
+              {recommendations.map((rec, index) => (
+                <li key={index}>{rec}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* Backend purchase suggestions (kept for compatibility; shown as an additional advisor insight) */}
       {!suggestionsLoading && !suggestionsError && purchaseSuggestions && (
-        <div style={styles.purchaseSuggestionsSection}>
-          <h2 style={styles.purchaseSuggestionsTitle}>What to Buy in Your Next Grocery Trip</h2>
-          <div style={styles.purchaseSuggestionsCard}>
-            {purchaseSuggestions.message && (
-              <p style={styles.purchaseSuggestionsMessage}>
-                {purchaseSuggestions.message}
-              </p>
-            )}
+        <div className="advisor-section">
+          <h2 className="advisor-section-title">Additional nutrition suggestions</h2>
+          <div className="advisor-card">
+            {purchaseSuggestions.message && <p className="advisor-paragraph">{purchaseSuggestions.message}</p>}
             {purchaseSuggestions.suggestions && purchaseSuggestions.suggestions.length > 0 ? (
               <div className="purchase-list">
                 {purchaseSuggestions.suggestions.map((item, index) => {
@@ -774,11 +594,7 @@ export default function MealPlan() {
                     <div key={index} className="purchase-card">
                       <div className="purchase-card-body">
                         <p className="purchase-card-title">{foodName}</p>
-                        {reason && (
-                          <p className="purchase-card-reason">
-                            {reason}
-                          </p>
-                        )}
+                        {reason && <p className="purchase-card-reason">{reason}</p>}
                         {nutritionBenefit && (
                           <div className="purchase-card-benefit">
                             <span className="purchase-card-benefit-dot" />
@@ -791,8 +607,8 @@ export default function MealPlan() {
                 })}
               </div>
             ) : (
-              <p style={styles.purchaseSuggestionsMessage}>
-                Your nutrition intake looks balanced. No specific recommendations at this time.
+              <p className="advisor-paragraph text-muted">
+                No specific recommendations at this time.
               </p>
             )}
           </div>
@@ -805,7 +621,7 @@ export default function MealPlan() {
         It does not regenerate the meal plan - it simply redirects to the Dashboard
         where previously saved nutrition summary and meal plan data will be displayed.
       */}
-      <div style={styles.buttonContainer}>
+      <div className="advisor-footer">
         <button
           type="button"
           className="btn btn-primary"

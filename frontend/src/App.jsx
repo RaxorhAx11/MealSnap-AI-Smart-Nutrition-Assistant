@@ -5,6 +5,9 @@ import MealPlan from './components/MealPlan';
 import ReceiptUpload from './components/ReceiptUpload';
 import ReceiptNextStep from './components/ReceiptNextStep';
 import NutritionSummary from './components/NutritionSummary';
+import Profile from './components/Profile';
+import Recommendations from './components/Recommendations';
+import ReceiptHistory from './components/ReceiptHistory';
 import Signup from './components/Signup';
 import Login from './components/Login';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -42,8 +45,46 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="/upload" element={<ReceiptUpload />} />
-          <Route path="/upload/next" element={<ReceiptNextStep />} />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/recommendations"
+            element={
+              <ProtectedRoute>
+                <Recommendations />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/receipt-history"
+            element={
+              <ProtectedRoute>
+                <ReceiptHistory />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/upload"
+            element={
+              <ProtectedRoute>
+                <ReceiptUpload />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/upload/next"
+            element={
+              <ProtectedRoute>
+                <ReceiptNextStep />
+              </ProtectedRoute>
+            }
+          />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Layout>

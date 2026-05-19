@@ -25,8 +25,8 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
-# User-scoped tables that were updated to include user_id. Dropped and recreated on migration.
-_USER_SCOPED_TABLES = ("weight_entries", "nutrition_summaries", "confirmed_items", "meal_plans")
+# User-scoped tables. In SQLite we may drop/recreate these to keep schema in sync.
+_USER_SCOPED_TABLES = ("weight_entries", "weight_logs", "nutrition_summaries", "confirmed_items", "meal_plans", "receipts")
 
 
 def _migrate_sqlite_user_scoped_schema() -> None:
@@ -38,18 +38,35 @@ def _migrate_sqlite_user_scoped_schema() -> None:
     if "sqlite" not in url.lower():
         return
     with engine.connect() as conn:
+        # 1) Legacy migration: tables existed without user_id -> drop/recreate.
         try:
             r = conn.execute(text("PRAGMA table_info(weight_entries)"))
+            rows = r.fetchall()
+            # SQLite PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk)
+            has_user_id = any(str(row[1]) == "user_id" for row in rows)
+            if not has_user_id:
+                for table in _USER_SCOPED_TABLES:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                conn.commit()
+                return
         except Exception:
-            return  # table missing, create_all will create it
-        rows = r.fetchall()
-        # SQLite PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk)
-        has_user_id = any(str(row[1]) == "user_id" for row in rows)
-        if has_user_id:
+            # weight_entries missing; create_all will create it (and others).
             return
-        for table in _USER_SCOPED_TABLES:
-            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
-        conn.commit()
+
+        # 2) Schema sync for weight_logs: ensure columns exist for the redesigned module.
+        # If the table exists but is missing required columns, drop/recreate. This keeps
+        # the app reliable without introducing a complex migration framework.
+        try:
+            r2 = conn.execute(text("PRAGMA table_info(weight_logs)"))
+            rows2 = r2.fetchall()
+            if rows2:
+                cols = {str(row[1]) for row in rows2}
+                required = {"user_id", "weight_kg", "recorded_at", "recorded_date", "body_fat_percentage", "note"}
+                if not required.issubset(cols):
+                    conn.execute(text("DROP TABLE IF EXISTS weight_logs"))
+                    conn.commit()
+        except Exception:
+            return
 
 
 def init_db() -> None:

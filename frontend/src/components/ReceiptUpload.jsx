@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { uploadReceipt } from '../services/api';
+import { TOKEN_KEY } from './ProtectedRoute';
 import ReviewItems from './ReviewItems';
 
 const ReceiptUpload = () => {
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [ocrText, setOcrText] = useState([]);
   const [processedItems, setProcessedItems] = useState([]);
   const [reviewedItems, setReviewedItems] = useState([]);
   const [isValid, setIsValid] = useState(false);
+  const [scanResultKey, setScanResultKey] = useState(0);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
 
@@ -25,6 +26,82 @@ const ReceiptUpload = () => {
   const videoRef = useRef(null);
   const cropContainerRef = useRef(null);
   const cropImgRef = useRef(null);
+
+  /** Map OCR unit words to database units: kg, g, l, ml, pc */
+  const UNIT_MAPPING = {
+    kg: 'kg', kilogram: 'kg', kilograms: 'kg',
+    g: 'g', gm: 'g', gram: 'g', grams: 'g',
+    l: 'l', ltr: 'l', liter: 'l', litre: 'l', liters: 'l', litres: 'l',
+    ml: 'ml', milliliter: 'ml', millilitre: 'ml', milliliters: 'ml', millilitres: 'ml',
+    pc: 'pc', pcs: 'pc', piece: 'pc', pieces: 'pc', unit: 'pc', dozen: 'pc',
+  };
+
+  /**
+   * Parse one OCR line into product name, quantity, and unit.
+   * Pattern: Name + Quantity (numeric) + Unit (mapped to kg|g|l|ml|pc).
+   * @param {string} line - Single OCR line (e.g. "BANANA 2 KG", "SUGAR 500 GRAMS")
+   * @returns {{ name: string, quantity: number|'', unit: string }}
+   */
+  const parseOcrLine = (line) => {
+    const raw = line.trim();
+    if (!raw) return { name: '', quantity: '', unit: '' };
+
+    // Try full-line match first: "Name 123unit" or "Name 123 unit" (handles "Rice 1kg", "Rice1kg", "BANANA 2 KG")
+    const fullMatch = raw.match(/^(.+?)(\d+\.?\d*)\s*([a-zA-Z]+)\s*$/);
+    if (fullMatch) {
+      const namePart = fullMatch[1].trim();
+      const numPart = parseFloat(fullMatch[2]);
+      const unitPart = fullMatch[3].toLowerCase();
+      if (!Number.isNaN(numPart) && namePart.length > 0 && UNIT_MAPPING[unitPart] != null) {
+        return {
+          name: namePart,
+          quantity: numPart,
+          unit: UNIT_MAPPING[unitPart],
+        };
+      }
+    }
+
+    const words = raw.split(/\s+/);
+    if (words.length === 0) return { name: raw, quantity: '', unit: '' };
+
+    const last = words[words.length - 1];
+    const secondLast = words[words.length - 2];
+    const lastLower = last.toLowerCase();
+    const secondNum = secondLast != null && /^\d+\.?\d*$/.test(secondLast) ? parseFloat(secondLast) : NaN;
+
+    // Pattern: last word is concatenated number+unit (e.g. "1kg", "200g", "500ml")
+    const combinedMatch = last.match(/^(\d+\.?\d*)([a-zA-Z]+)$/);
+    if (combinedMatch) {
+      const numPart = parseFloat(combinedMatch[1]);
+      const unitPart = combinedMatch[2].toLowerCase();
+      if (!Number.isNaN(numPart) && UNIT_MAPPING[unitPart] != null) {
+        return {
+          name: words.slice(0, -1).join(' ').trim(),
+          quantity: numPart,
+          unit: UNIT_MAPPING[unitPart],
+        };
+      }
+    }
+
+    // Pattern: ... Name Quantity Unit (separate words)
+    if (words.length >= 2 && UNIT_MAPPING[lastLower] != null && !Number.isNaN(secondNum)) {
+      return {
+        name: words.slice(0, -2).join(' ').trim(),
+        quantity: secondNum,
+        unit: UNIT_MAPPING[lastLower],
+      };
+    }
+    // Pattern: ... Name Quantity (no unit)
+    if (words.length >= 1 && /^\d+\.?\d*$/.test(last)) {
+      return {
+        name: words.slice(0, -1).join(' ').trim(),
+        quantity: parseFloat(last),
+        unit: '',
+      };
+    }
+    // No quantity/unit detected: whole line is name
+    return { name: raw, quantity: '', unit: '' };
+  };
 
   /**
    * Removes unwanted text patterns from receipt (payment methods, thank you messages, etc.)
@@ -59,15 +136,7 @@ const ReceiptUpload = () => {
   };
 
   /**
-   * Checks if a line is likely a quantity-only line (e.g., "1kg", "200g")
-   */
-  const isQuantityOnly = (line) => {
-    const quantityPattern = /^\s*\d+\.?\d*\s*(kg|g|l|ml|pc|pcs|pieces?)\s*$/i;
-    return quantityPattern.test(line.trim());
-  };
-
-  /**
-   * Post-processes OCR text to extract item phrases and remove quantities
+   * Post-processes OCR text: parses each line into name, quantity, unit (normalized to kg|g|l|ml|pc).
    * @param {string[]} rawOcrText - Array of raw OCR text lines
    * @returns {Array} Array of item objects with name, quantity, unit, is_valid
    */
@@ -76,78 +145,26 @@ const ReceiptUpload = () => {
       return [];
     }
 
-    // Combine all OCR text into a single string, then split by newlines
-    const combinedText = Array.isArray(rawOcrText) 
-      ? rawOcrText.join('\n') 
+    const combinedText = Array.isArray(rawOcrText)
+      ? rawOcrText.join('\n')
       : String(rawOcrText);
-    
-    // Remove unwanted text first
-    let cleanedText = removeUnwantedText(combinedText);
-    
-    // Split into lines and filter out empty lines
+    const cleanedText = removeUnwantedText(combinedText);
     const lines = cleanedText
       .split(/\n+/)
       .map(line => line.trim())
       .filter(line => line.length > 0);
 
     const items = [];
-    let i = 0;
-
-    while (i < lines.length) {
-      const currentLine = lines[i];
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : null;
-
-      // Skip if it's a quantity-only line (will be handled by previous item if needed)
-      if (isQuantityOnly(currentLine)) {
-        i++;
-        continue;
-      }
-
-      // Check if next line is a quantity-only line
-      if (nextLine && isQuantityOnly(nextLine)) {
-        // Current line is item name, next line is quantity - skip quantity
-        let itemName = currentLine;
-        
-        // Remove any quantity patterns that might still be in the name
-        const quantityPattern = /\d+\.?\d*\s*(kg|g|l|ml|pc|pcs|pieces?)\s*/gi;
-        itemName = itemName.replace(quantityPattern, '').trim();
-        
-        // Remove prices at the end
-        itemName = itemName.replace(/\s+\d+\.?\d*\s*$/, '').trim();
-        
-        if (itemName.length >= 2 && !/^[\d\s\.\-\$€£]+$/.test(itemName)) {
-          items.push({
-            name: itemName,
-            quantity: '',
-            unit: '',
-            is_valid: true
-          });
-        }
-        i += 2; // Skip both lines
-      } else {
-        // Regular line - extract item name
-        let itemName = currentLine;
-        
-        // Remove quantity patterns from the line
-        const quantityPattern = /\d+\.?\d*\s*(kg|g|l|ml|pc|pcs|pieces?)\s*/gi;
-        itemName = itemName.replace(quantityPattern, '').trim();
-        
-        // Remove prices at the end
-        itemName = itemName.replace(/\s+\d+\.?\d*\s*$/, '').trim();
-        
-        // Skip if too short or only numbers/special chars
-        if (itemName.length >= 2 && !/^[\d\s\.\-\$€£]+$/.test(itemName)) {
-          items.push({
-            name: itemName,
-            quantity: '',
-            unit: '',
-            is_valid: true
-          });
-        }
-        i++;
-      }
+    for (const line of lines) {
+      const { name, quantity, unit } = parseOcrLine(line);
+      if (!name || name.length < 2 || /^[\d\s.\-$€£]+$/.test(name)) continue;
+      items.push({
+        name,
+        quantity: quantity === '' || quantity == null ? '' : String(quantity),
+        unit: unit ? String(unit) : '',
+        is_valid: true,
+      });
     }
-
     return items;
   };
 
@@ -164,7 +181,6 @@ const ReceiptUpload = () => {
       setFile(selectedFile);
       setError(null);
       setSuccess(false);
-      setOcrText([]);
       setProcessedItems([]);
       setReviewedItems([]);
       setIsValid(false);
@@ -202,9 +218,12 @@ const ReceiptUpload = () => {
 
   // Attach stream to video when available.
   useEffect(() => {
-    if (!cameraStream || !videoRef.current) return;
-    videoRef.current.srcObject = cameraStream;
-    return () => { videoRef.current && (videoRef.current.srcObject = null); };
+    const videoEl = videoRef.current;
+    if (!cameraStream || !videoEl) return;
+    videoEl.srcObject = cameraStream;
+    return () => {
+      if (videoEl) videoEl.srcObject = null;
+    };
   }, [cameraStream]);
 
   // Capture current video frame, stop stream, switch to crop step. Instructions are hidden in crop.
@@ -224,13 +243,13 @@ const ReceiptUpload = () => {
   };
 
   // Close camera/crop modal: stop stream if any, clear captured image.
-  const closeCameraModal = () => {
+  const closeCameraModal = useCallback(() => {
     stopCamera();
     setCameraModalOpen(false);
     setCameraStep('preview');
     setCapturedImageData(null);
     setDragState(null);
-  };
+  }, [stopCamera]);
 
   // Crop editor: store natural size when image loads (for aspect-ratio and canvas crop).
   const onCropImageLoad = (e) => {
@@ -315,7 +334,7 @@ const ReceiptUpload = () => {
     const onKey = (e) => { if (e.key === 'Escape') closeCameraModal(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cameraModalOpen]);
+  }, [cameraModalOpen, closeCameraModal]);
 
   // Apply crop: draw the selected region to canvas, export as File, feed into existing upload flow.
   const applyCrop = () => {
@@ -334,7 +353,6 @@ const ReceiptUpload = () => {
         setFile(f);
         setError(null);
         setSuccess(false);
-        setOcrText([]);
         setProcessedItems([]);
         setReviewedItems([]);
         setIsValid(false);
@@ -364,7 +382,6 @@ const ReceiptUpload = () => {
     setLoading(true);
     setError(null);
     setSuccess(false);
-    setOcrText([]);
     setProcessedItems([]);
     setReviewedItems([]);
     setIsValid(false);
@@ -372,15 +389,21 @@ const ReceiptUpload = () => {
     try {
       const response = await uploadReceipt(file);
       const rawText = response.raw_ocr_text || [];
-      setOcrText(rawText);
       
       // Process OCR text to extract items
       const items = processOcrText(rawText);
       setProcessedItems(items);
-      
+      setScanResultKey((k) => k + 1);
       setSuccess(true);
     } catch (err) {
-      setError(err.message || 'Failed to upload and process receipt');
+      const msg = err.message || 'Failed to upload and process receipt';
+      const isAuthError = /invalid or expired token|unauthorized/i.test(msg);
+      if (isAuthError) {
+        localStorage.removeItem(TOKEN_KEY);
+        navigate('/login', { replace: true });
+        return;
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -388,7 +411,10 @@ const ReceiptUpload = () => {
 
   return (
     <div className="auth-page">
-      <div className="auth-card" style={{ maxWidth: 580 }}>
+      <div
+        className="auth-card"
+        style={{ maxWidth: success && processedItems.length > 0 ? 960 : 580 }}
+      >
         <div className="auth-card-header">
           <h1 className="auth-card-title">Upload receipt</h1>
           <p className="auth-card-subtitle">
@@ -520,6 +546,7 @@ const ReceiptUpload = () => {
         {success && processedItems.length > 0 && (
           <div style={{ marginTop: 'var(--space-4)' }} className="stack-md">
             <ReviewItems
+              key={scanResultKey}
               items={processedItems}
               onItemsChange={(items) => setReviewedItems(items)}
               onValidationChange={(valid) => setIsValid(valid)}

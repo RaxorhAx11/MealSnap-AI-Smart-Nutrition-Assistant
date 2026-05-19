@@ -1,13 +1,26 @@
 import React, { useState, useEffect } from 'react';
 
+function normalizeItem(item) {
+  return {
+    ...item,
+    name: item.name != null ? String(item.name).trim() : '',
+    quantity: item.quantity != null && item.quantity !== '' ? String(item.quantity) : '',
+    unit: item.unit != null ? String(item.unit) : '',
+    is_valid: item.is_valid !== false,
+  };
+}
+
 const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChange }) => {
-  // Create state for items, using initialItems as the starting point
-  const [items, setItems] = useState(initialItems);
+  const normalizedInitial = Array.isArray(initialItems)
+    ? initialItems.map(normalizeItem)
+    : [];
+  const [items, setItems] = useState(() => normalizedInitial);
   const [cutIndex, setCutIndex] = useState(null); // For cut/move functionality
 
-  // Update items when initialItems change
+  // When parent sends new items (e.g. after scan), replace state with normalized copy
   useEffect(() => {
-    setItems(initialItems);
+    const next = Array.isArray(initialItems) ? initialItems.map(normalizeItem) : [];
+    setItems(next);
   }, [initialItems]);
 
   // Notify parent of changes
@@ -188,11 +201,11 @@ const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChan
             <table className="review-table">
               <thead>
                 <tr>
-                  <th>#</th>
-                  <th style={{ minWidth: '260px' }}>Item</th>
-                  <th style={{ width: '110px' }}>Quantity</th>
-                  <th style={{ width: '300px' }}>Unit</th>
-                  <th style={{ width: '210px' }}>Actions</th>
+                  <th className="review-th-index">#</th>
+                  <th className="review-th-name">Item Name</th>
+                  <th className="review-th-qty">Quantity</th>
+                  <th className="review-th-unit">Unit</th>
+                  <th className="review-th-actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -202,15 +215,11 @@ const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChan
                   return (
                     <tr
                       key={index}
-                      style={
-                        isCut
-                          ? { backgroundColor: '#fef9c3' }
-                          : undefined
-                      }
+                      className={`review-table-row ${isCut ? 'review-table-row--cut' : ''}`}
                     >
-                      <td>{index + 1}</td>
-                      <td>
-                        <div className="stack-md" style={{ marginBottom: 0 }}>
+                      <td className="review-td-index">{index + 1}</td>
+                      <td className="review-td-name">
+                        <div className="stack-md review-name-cell" style={{ marginBottom: 0 }}>
                           <textarea
                             className="input review-name-input"
                             value={item.name}
@@ -230,7 +239,7 @@ const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChan
                           )}
                         </div>
                       </td>
-                      <td>
+                      <td className="review-td-qty">
                         <input
                           type="number"
                           className="input"
@@ -241,7 +250,7 @@ const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChan
                           step="0.01"
                         />
                       </td>
-                      <td>
+                      <td className="review-td-unit">
                         <select
                           className="input"
                           value={item.unit}
@@ -255,7 +264,7 @@ const ReviewItems = ({ items: initialItems = [], onItemsChange, onValidationChan
                           ))}
                         </select>
                       </td>
-                      <td>
+                      <td className="review-td-actions">
                         <div className="review-actions">
                           <button
                             type="button"

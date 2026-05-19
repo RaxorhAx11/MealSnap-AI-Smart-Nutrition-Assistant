@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { login } from '../services/api';
+import AuthLogo from './AuthLogo';
 
 const TOKEN_KEY = 'jwt_token';
 
@@ -31,9 +32,15 @@ function Login() {
 
   return (
     <div className="auth-page">
+      <header className="auth-page-header">
+        <AuthLogo />
+        <h1 className="auth-page-title">Sign in</h1>
+        <p className="auth-page-subtitle">Access your dashboard and meal plans.</p>
+      </header>
+
       <div className="auth-card">
         <div className="auth-card-header">
-          <h1 className="auth-card-title">Welcome back</h1>
+          <h2 className="auth-card-title">Welcome back</h2>
           <p className="auth-card-subtitle">
             Log in to view your nutrition insights and meal plans.
           </p>

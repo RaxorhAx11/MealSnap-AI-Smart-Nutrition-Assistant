@@ -130,6 +130,35 @@ export const saveWeight = async ({ date, weight }) => {
   });
 };
 
+// -----------------------------
+// Weight Tracker (v2)
+// -----------------------------
+
+/**
+ * Add today's weight entry (prevents duplicate same-day).
+ * @param {Object} payload - { weight_kg, note? }
+ * @returns {Promise<Object>} { message, current_weight }
+ */
+export const addWeightLog = async ({ weight_kg, note } = {}) => {
+  return await fetchJson(`${API_BASE_URL}/weight/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ weight_kg, note }),
+  });
+};
+
+/**
+ * Fetch weight log history.
+ * @param {Object} [options] - { days? }
+ * @returns {Promise<Array<{date: string, weight: number}>>}
+ */
+export const fetchWeightLogHistory = async ({ days } = {}) => {
+  const q = new URLSearchParams();
+  if (days != null) q.set('days', String(days));
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  return await fetchJson(`${API_BASE_URL}/weight/history${suffix}`, { headers: { ...authHeaders() } });
+};
+
 /**
  * Analyze nutrition for a list of items
  * @param {Array} items - Array of items with name, quantity, unit
@@ -205,4 +234,36 @@ export const fetchDashboardNutrition = async () => {
  */
 export const fetchPurchaseSuggestions = async () => {
   return await fetchJson(`${API_BASE_URL}/next-purchase-suggestions`, { headers: { ...authHeaders() } });
+};
+
+// -----------------------------
+// Profile + personalization
+// -----------------------------
+
+export const fetchUserProfile = async () => {
+  return await fetchJson(`${API_BASE_URL}/profile`, { headers: { ...authHeaders() } });
+};
+
+export const updateUserProfile = async (payload) => {
+  return await fetchJson(`${API_BASE_URL}/profile/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(payload || {}),
+  });
+};
+
+// -----------------------------
+// Receipt history
+// -----------------------------
+
+export const fetchReceiptHistory = async () => {
+  return await fetchJson(`${API_BASE_URL}/receipts/history`, { headers: { ...authHeaders() } });
+};
+
+// -----------------------------
+// Recommendations
+// -----------------------------
+
+export const fetchWeightRecommendations = async () => {
+  return await fetchJson(`${API_BASE_URL}/weight/recommendations`, { headers: { ...authHeaders() } });
 };

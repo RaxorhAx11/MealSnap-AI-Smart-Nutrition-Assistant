@@ -1,19 +1,77 @@
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Any, Literal, TypedDict
+import zlib
 
 from .rules import avoid_consecutive_repeats, main_food_label
 
 # Import nutrition calculation utilities
 try:
     from ..utils.food_matcher import get_food_nutrition
+    from ..utils import convert_to_grams, calculate_food_nutrition
 except ImportError:
     # Fallback for direct imports
     import sys
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
     from utils.food_matcher import get_food_nutrition
+    from utils import convert_to_grams, calculate_food_nutrition
 
+try:
+    # Optional: use the app's workflow gap analysis + recommendations when available
+    from services.nutrition_gap_service import GapItem
+    from services.recommendation_service import build_grocery_recommendations_from_gaps
+except Exception:  # pragma: no cover (planner should still work standalone)
+    GapItem = Any  # type: ignore
+    build_grocery_recommendations_from_gaps = None  # type: ignore
+
+
+MealName = Literal["breakfast", "lunch", "dinner"]
+FoodCategory = Literal["grain", "fruit", "vegetable", "dairy", "protein", "fat", "unknown"]
+
+
+class MealPlanWhy(TypedDict):
+    food: str
+    nutrition_benefit: str
+
+
+class MealPlanPortion(TypedDict, total=False):
+    quantity: float
+    unit: str
+    grams: float
+
+
+class MealPlanMacros(TypedDict):
+    calories: float
+    protein: float
+    carbs: float
+    fats: float
+
+
+class MealPlanItemV3(TypedDict, total=False):
+    name: str
+    category: FoodCategory
+    portion: MealPlanPortion
+    macros: MealPlanMacros
+    why: MealPlanWhy
+    source: Literal["purchased", "recommended"]
+
+
+class WeeklyDayPlanV3(TypedDict, total=False):
+    day: str
+    breakfast: List[MealPlanItemV3]
+    lunch: List[MealPlanItemV3]
+    dinner: List[MealPlanItemV3]
+    total_calories: float
+    total_macros: MealPlanMacros
+    status: str
+    calorie_target: int
+    decision_rules: List[str]
+
+
+class WeeklyAddSuggestion(TypedDict):
+    food: str
+    nutrition_benefit: str
 
 def _clean_list(values: Optional[Sequence[str]]) -> List[str]:
     if not values:
@@ -33,6 +91,18 @@ def _rotate_pick(items: List[str], day_index: int) -> Optional[str]:
     if not items:
         return None
     return items[day_index % len(items)]
+
+
+def _stable_int(s: str) -> int:
+    """
+    Stable hash for deterministic ordering.
+    Python's built-in hash() is salted per-process; do NOT use it in planners.
+    """
+    return int(zlib.crc32(str(s or "").encode("utf-8")) & 0xFFFFFFFF)
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 
 def _keyword_score(text: str, keywords: Sequence[str]) -> int:
@@ -778,4 +848,660 @@ def generate_daily_meal_plan(
         prev_day_items = day_items
     
     return plan_days
+
+
+def _estimate_calories_for_item_from_confirmed(
+    *,
+    name: str,
+    quantity: Optional[float],
+    unit: Optional[str],
+) -> float:
+    """
+    Estimate calories for an item using confirmed receipt quantity/unit when available.
+    Falls back to estimate_item_nutrition when quantity/unit can't be converted.
+    """
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        return 0.0
+
+    try:
+        if quantity is None or unit is None:
+            return float(estimate_item_nutrition(clean_name).get("calories", 0.0))
+        q = float(quantity)
+        u = str(unit).strip()
+        if not u:
+            return float(estimate_item_nutrition(clean_name).get("calories", 0.0))
+
+        # Convert to grams using existing nutrition utility (handles pcs with food_name)
+        if u.lower() in ["pc", "pcs", "piece", "pieces"]:
+            qty_str = f"{q} {u}"
+        else:
+            qty_str = f"{q}{u}"
+        grams = convert_to_grams(qty_str, food_name=clean_name)
+        if grams is None:
+            return float(estimate_item_nutrition(clean_name).get("calories", 0.0))
+
+        # Use existing nutrition calculation logic to compute calories for the gram amount.
+        calc = calculate_food_nutrition(
+            food_name=clean_name,
+            quantity_grams=float(grams),
+            similarity_threshold=80.0,
+            round_decimals=1,
+        )
+        if calc and "calories" in calc:
+            return float(calc["calories"] or 0.0)
+    except Exception:
+        pass
+
+    return float(estimate_item_nutrition(clean_name).get("calories", 0.0))
+
+
+def generate_daily_meal_plan_v2(
+    confirmed_items: List[Dict[str, object]],
+    *,
+    daily_calorie_target: int = 2000,
+    items_per_day: int = 3,
+    nutrition_gaps: Optional[List[GapItem]] = None,
+) -> List[Dict[str, object]]:
+    """
+    Improved 7-day plan generator.
+
+    Goals:
+    - Prefer foods the user already purchased (confirmed_items)
+    - Ensure variety across 7 days (avoid repeating same items day-to-day; balance usage counts)
+    - Consider nutrition gaps when choosing foods (bias categories for "low" gaps)
+    - Estimate daily calories and compare with target (2000 kcal)
+
+    Output is compatible with existing UI shape, but also includes:
+      - total_calories
+      - target_status
+    """
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    # Normalize confirmed items into a name->best-entry map (prefer entries with quantity+unit).
+    by_name: Dict[str, Dict[str, object]] = {}
+    for it in confirmed_items or []:
+        raw_name = str(it.get("name") or "").strip()
+        if not raw_name:
+            continue
+        q = it.get("quantity")
+        u = it.get("unit")
+        existing = by_name.get(raw_name)
+        if existing is None:
+            by_name[raw_name] = {"name": raw_name, "quantity": q, "unit": u}
+        else:
+            # Prefer the one that has both quantity and unit
+            if (existing.get("quantity") is None or existing.get("unit") in [None, ""]) and (q is not None and u not in [None, ""]):
+                by_name[raw_name] = {"name": raw_name, "quantity": q, "unit": u}
+
+    purchased_names = list(by_name.keys())
+    purchased_names = _clean_list(purchased_names)
+    if not purchased_names:
+        return [
+            {
+                "day": DAY_NAMES[i],
+                "daily_meal_plan": [],
+                "total_calories": 0,
+                "target_status": "N/A",
+                "total_nutrition_today": {"calories": 0, "protein": 0, "carbs": 0, "fats": 0},
+                "daily_target": {"target_calories": daily_calorie_target, "status": "N/A"},
+            }
+            for i in range(7)
+        ]
+
+    # Determine "needed" categories from low gaps (simple mapping).
+    needed_categories: List[str] = []
+    for g in nutrition_gaps or []:
+        if not isinstance(g, dict):
+            continue
+        if g.get("status") != "low":
+            continue
+        n = g.get("nutrient")
+        if n == "protein":
+            needed_categories.append("protein")
+        elif n == "carbohydrates":
+            needed_categories.append("grain")
+        elif n == "fats":
+            needed_categories.append("fat")
+
+    # Optional non-purchased boosters from recommendation engine (used only when needed category is missing).
+    booster_items: List[str] = []
+    if needed_categories and build_grocery_recommendations_from_gaps:
+        try:
+            recs = build_grocery_recommendations_from_gaps(list(nutrition_gaps or []))
+            booster_items = _clean_list([r.get("food") for r in recs if isinstance(r, dict)])
+        except Exception:
+            booster_items = []
+
+    categorized = _categorize_items_by_database(purchased_names)
+    usage: Dict[str, int] = {n: 0 for n in purchased_names}
+    prev_day_set: set[str] = set()
+    plan_days: List[Dict[str, object]] = []
+
+    def pick_from(pool: List[str], day_index: int) -> Optional[str]:
+        """Pick with variety bias: lowest usage first, avoid yesterday when possible."""
+        pool = _clean_list(pool)
+        if not pool:
+            return None
+        # Avoid yesterday if possible
+        candidates = [x for x in pool if x not in prev_day_set] or pool
+        # Sort by usage then rotate to spread (deterministic; do not use Python hash()).
+        candidates.sort(key=lambda x: (usage.get(x, 0), (day_index + _stable_int(x)) % 97))
+        for c in candidates:
+            return c
+        return candidates[0]
+
+    for day_index in range(7):
+        day_items: List[str] = []
+        chosen_set: set[str] = set()
+
+        # 1) Satisfy gap-driven categories if possible (from purchased foods first).
+        for cat in needed_categories:
+            if len(day_items) >= items_per_day:
+                break
+            pool = categorized.get(cat, [])
+            choice = pick_from(pool, day_index)
+            if choice and choice not in chosen_set:
+                day_items.append(choice)
+                chosen_set.add(choice)
+
+        # 2) Ensure baseline balance: at least one grain + one vegetable when available.
+        if len(day_items) < items_per_day and categorized.get("grain"):
+            if not any(_get_food_category(x) == "grain" for x in day_items):
+                choice = pick_from(categorized["grain"], day_index)
+                if choice and choice not in chosen_set:
+                    day_items.append(choice)
+                    chosen_set.add(choice)
+        if len(day_items) < items_per_day and categorized.get("vegetable"):
+            if not any(_get_food_category(x) == "vegetable" for x in day_items):
+                choice = pick_from(categorized["vegetable"], day_index)
+                if choice and choice not in chosen_set:
+                    day_items.append(choice)
+                    chosen_set.add(choice)
+
+        # 3) Fill remaining slots with least-used purchased items (variety).
+        if len(day_items) < items_per_day:
+            remaining = [x for x in purchased_names if x not in chosen_set]
+            remaining.sort(key=lambda x: (usage.get(x, 0), (day_index + _stable_int(x)) % 97))
+            for x in remaining:
+                if len(day_items) >= items_per_day:
+                    break
+                # mild avoidance of exact repetition across consecutive days
+                if x in prev_day_set and len(remaining) > items_per_day:
+                    continue
+                day_items.append(x)
+                chosen_set.add(x)
+
+        # 4) If we still can’t satisfy a needed category, add a booster suggestion (non-purchased) as last resort.
+        if len(day_items) < items_per_day and booster_items:
+            for b in booster_items:
+                if len(day_items) >= items_per_day:
+                    break
+                if b not in chosen_set:
+                    day_items.append(b)
+                    chosen_set.add(b)
+
+        # Update usage counts only for purchased items.
+        for x in day_items:
+            if x in usage:
+                usage[x] += 1
+
+        # Calories estimate: use confirmed quantities when possible.
+        total_calories = 0.0
+        for x in day_items:
+            entry = by_name.get(x) or {"name": x, "quantity": None, "unit": None}
+            total_calories += _estimate_calories_for_item_from_confirmed(
+                name=str(entry.get("name") or x),
+                quantity=entry.get("quantity") if isinstance(entry.get("quantity"), (int, float)) else None,
+                unit=str(entry.get("unit")) if entry.get("unit") not in [None, ""] else None,
+            )
+        total_calories = float(round(total_calories, 1))
+
+        # Target status (±10% band, matching existing behavior).
+        target_lower = daily_calorie_target * 0.9
+        target_upper = daily_calorie_target * 1.1
+        if total_calories < target_lower:
+            status = "Deficit"
+        elif total_calories > target_upper:
+            status = "Excess"
+        else:
+            status = "Met"
+
+        plan_days.append(
+            {
+                "day": DAY_NAMES[day_index],
+                "daily_meal_plan": day_items,
+                "total_calories": total_calories,
+                "target_status": status,
+                # Backward compatible fields used by the current UI:
+                "total_nutrition_today": {
+                    "calories": total_calories,
+                    "protein": 0,
+                    "carbs": 0,
+                    "fats": 0,
+                },
+                "daily_target": {"target_calories": daily_calorie_target, "status": status},
+            }
+        )
+
+        prev_day_set = set(day_items)
+
+    return plan_days
+
+
+def _gap_status_by_nutrient(nutrition_gaps: Optional[List[GapItem]]) -> Dict[str, str]:
+    """
+    Normalize gap items to a simple nutrient->status mapping.
+    Input shape: [{nutrient: "protein"|"carbohydrates"|"fats", status: "low"|"adequate"|"high", message: "..."}]
+    """
+    out: Dict[str, str] = {}
+    for g in nutrition_gaps or []:
+        if not isinstance(g, dict):
+            continue
+        nutrient = str(g.get("nutrient") or "").strip().lower()
+        status = str(g.get("status") or "").strip().lower()
+        if nutrient and status:
+            out[nutrient] = status
+    return out
+
+
+def _portion_preset(item_name: str, category: FoodCategory, meal: MealName) -> Tuple[float, str]:
+    """
+    Deterministic portion presets (consumption), not purchase quantities.
+
+    Decision rules:
+    - Breakfast: lighter portions than lunch.
+    - Lunch: largest meal; staple carbs are larger here.
+    - Dinner: moderate; carbs smaller than lunch.
+    - Units are chosen for readability: ml for common liquids, pcs for common "piece" foods, else g.
+    """
+    n = (item_name or "").strip().lower()
+
+    # Units that humans typically track as pieces.
+    if any(k in n for k in ["egg", "eggs"]):
+        return (2.0 if meal == "breakfast" else 3.0 if meal == "lunch" else 2.0, "pcs")
+    if any(k in n for k in ["bread", "toast"]):
+        return (2.0, "pcs")
+    if any(k in n for k in ["roti", "naan", "wrap", "tortilla"]):
+        return (2.0 if meal == "lunch" else 1.0, "pcs")
+    if category == "fruit" and any(k in n for k in ["banana", "apple", "orange"]):
+        return (1.0, "pcs")
+
+    # Liquids.
+    if category == "dairy" and any(k in n for k in ["milk", "buttermilk", "lassi"]):
+        return (250.0 if meal == "breakfast" else 200.0 if meal == "dinner" else 200.0, "ml")
+
+    # Default gram-based presets by category + meal.
+    if category == "grain":
+        return (70.0 if meal == "breakfast" else 180.0 if meal == "lunch" else 120.0, "g")
+    if category == "protein":
+        return (100.0 if meal == "breakfast" else 150.0 if meal == "lunch" else 130.0, "g")
+    if category == "vegetable":
+        return (80.0 if meal == "breakfast" else 120.0 if meal == "lunch" else 150.0, "g")
+    if category == "fat":
+        return (15.0, "g")
+    if category == "dairy":
+        return (150.0, "g")
+    if category == "fruit":
+        return (120.0, "g")
+
+    return (120.0 if meal == "lunch" else 80.0, "g")
+
+
+def _portion_to_grams(*, name: str, quantity: float, unit: str) -> Optional[float]:
+    """
+    Convert a portion (quantity+unit) to grams, using existing converter.
+    For ml, we assume 1ml≈1g (already implemented in convert_to_grams).
+    """
+    try:
+        q = float(quantity)
+        u = str(unit or "").strip()
+        if not u:
+            return None
+        qty_str = f"{q} {u}" if u.lower() in ["pc", "pcs", "piece", "pieces"] else f"{q}{u}"
+        grams = convert_to_grams(qty_str, food_name=str(name or "").strip())
+        return float(grams) if grams is not None else None
+    except Exception:
+        return None
+
+
+def _calc_macros_for_portion(*, name: str, grams: float) -> MealPlanMacros:
+    calc = calculate_food_nutrition(
+        food_name=str(name or "").strip(),
+        quantity_grams=float(grams),
+        similarity_threshold=80.0,
+        round_decimals=1,
+    )
+    if isinstance(calc, dict) and calc.get("calories") is not None:
+        return {
+            "calories": float(calc.get("calories") or 0.0),
+            "protein": float(calc.get("protein") or 0.0),
+            "carbs": float(calc.get("carbs") or 0.0),
+            "fats": float(calc.get("fats") or 0.0),
+        }
+    est = estimate_item_nutrition(str(name or "").strip(), default_quantity_grams=float(grams))
+    return {
+        "calories": float(est.get("calories") or 0.0),
+        "protein": float(est.get("protein") or 0.0),
+        "carbs": float(est.get("carbs") or 0.0),
+        "fats": float(est.get("fats") or 0.0),
+    }
+
+
+def _why_for_item(*, name: str, category: FoodCategory, gap_status: Dict[str, str], source: str) -> MealPlanWhy:
+    """
+    Deterministic "why" messages (benefit only).
+    """
+    clean = str(name or "").strip()
+
+    if gap_status.get("protein") == "low" and category == "protein":
+        return {"food": clean, "nutrition_benefit": "Helps increase protein for better satiety and muscle support."}
+    if gap_status.get("carbohydrates") == "low" and category in ("grain", "fruit"):
+        return {"food": clean, "nutrition_benefit": "Adds energy and (often) fiber for steady fuel."}
+    if gap_status.get("fats") == "low" and category == "fat":
+        return {"food": clean, "nutrition_benefit": "Supports hormone health and absorption of fat‑soluble vitamins."}
+
+    if category == "vegetable":
+        return {"food": clean, "nutrition_benefit": "Adds fiber and micronutrients for better digestion and balance."}
+    if category == "protein":
+        return {"food": clean, "nutrition_benefit": "Adds protein to support satiety and muscle maintenance."}
+    if category == "grain":
+        return {"food": clean, "nutrition_benefit": "Provides carbohydrates for energy, especially around your main meals."}
+    if category == "dairy":
+        return {"food": clean, "nutrition_benefit": "Provides protein and calcium for daily nutrition."}
+    if category == "fruit":
+        return {"food": clean, "nutrition_benefit": "Adds vitamins and fiber for overall health."}
+    if category == "fat":
+        return {"food": clean, "nutrition_benefit": "Adds healthy fats to round out the meal."}
+    return {"food": clean, "nutrition_benefit": "Included for variety and meal completeness."}
+
+
+def _status_vs_target(total_calories: float, target: int) -> str:
+    lo = float(target) * 0.9
+    hi = float(target) * 1.1
+    if total_calories < lo:
+        return "Deficit"
+    if total_calories > hi:
+        return "Excess"
+    return "Near Target"
+
+
+def generate_weekly_meal_plan_v3(
+    confirmed_items: List[Dict[str, object]],
+    *,
+    daily_calorie_target: int,
+    nutrition_gaps: Optional[List[GapItem]] = None,
+    days_count: int = 3,
+) -> List[WeeklyDayPlanV3]:
+    """
+    Deterministic, rule-based weekly meal plan (Mon–Sun).
+
+    Integrates:
+    - confirmed receipt items (purchased-first)
+    - nutrition gap analysis (bias selection)
+    - user's daily calorie target (portion sizing)
+    """
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    days_count = int(days_count or 3)
+    days_count = max(1, min(days_count, len(DAY_NAMES)))
+    # Use deterministic labels requested by UI: day-1, day-2, day-3 (etc).
+    day_names = [f"day-{i + 1}" for i in range(days_count)]
+    target = int(daily_calorie_target or 2000)
+    meal_targets = split_daily_calories(target)
+    gap_status = _gap_status_by_nutrient(nutrition_gaps)
+
+    purchased_names: List[str] = []
+    for it in confirmed_items or []:
+        name = str(it.get("name") or "").strip()
+        if name:
+            purchased_names.append(name)
+
+    purchased_names = _clean_list(purchased_names)
+    purchased_names = list(dict.fromkeys(purchased_names))  # stable dedupe preserving order
+
+    categorized = _categorize_items_by_database(purchased_names)
+
+    booster: List[Dict[str, str]] = []
+    if build_grocery_recommendations_from_gaps and nutrition_gaps:
+        try:
+            booster = [b for b in build_grocery_recommendations_from_gaps(list(nutrition_gaps)) if isinstance(b, dict)]
+        except Exception:
+            booster = []
+
+    # Suggestions (what to add + what you get). Keep stable, simple, and de-duped.
+    suggested_additions: List[WeeklyAddSuggestion] = []
+    try:
+        seen = set()
+        for b in booster:
+            food = str(b.get("food") or "").strip()
+            benefit = str(b.get("nutrition_benefit") or "").strip()
+            key = food.lower()
+            if not food or not benefit or key in seen:
+                continue
+            suggested_additions.append({"food": food, "nutrition_benefit": benefit})
+            seen.add(key)
+            if len(suggested_additions) >= 6:
+                break
+    except Exception:
+        suggested_additions = []
+
+    def pool_for(cat: FoodCategory) -> List[str]:
+        return _clean_list(categorized.get(cat, []))
+
+    usage: Dict[str, int] = {n: 0 for n in purchased_names}
+    last_main: Dict[MealName, Optional[str]] = {"breakfast": None, "lunch": None, "dinner": None}
+
+    def pick_item(*, pool: List[str], day_index: int, meal: MealName, avoid_set: set[str]) -> Optional[str]:
+        items = [x for x in _clean_list(pool) if x not in avoid_set] or _clean_list(pool)
+        if not items:
+            return None
+        prev_label = last_main.get(meal)
+        items = avoid_consecutive_repeats(items, prev_label) if prev_label else items
+        items.sort(key=lambda x: (usage.get(x, 0), (_stable_int(x) + day_index * 17) % 997))
+        return items[0] if items else None
+
+    def add_booster(items: List[MealPlanItemV3], needed: FoodCategory, meal: MealName) -> None:
+        if not booster:
+            return
+        for b in booster:
+            food = str(b.get("food") or "").strip()
+            if not food:
+                continue
+            cat = _get_food_category(food) or "unknown"
+            if cat != needed:
+                continue
+            q, u = _portion_preset(food, cat, meal)
+            grams = _portion_to_grams(name=food, quantity=q, unit=u) or 0.0
+            macros = _calc_macros_for_portion(name=food, grams=grams) if grams else {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
+            items.append(
+                {
+                    "name": food,
+                    "category": cat,
+                    "portion": {"quantity": float(q), "unit": str(u), "grams": float(round(grams, 1)) if grams else 0.0},
+                    "macros": macros,
+                    "why": {
+                        "food": food,
+                        "nutrition_benefit": str(b.get("nutrition_benefit") or "Helps improve overall balance."),
+                    },
+                    "source": "recommended",
+                }
+            )
+            return
+
+    def meal_total(items: List[MealPlanItemV3]) -> float:
+        return float(round(sum(float(i.get("macros", {}).get("calories") or 0.0) for i in items), 1))
+
+    def downscale_grains(meal_items: List[MealPlanItemV3], target_kcal: int) -> None:
+        for _ in range(6):
+            if meal_total(meal_items) <= float(target_kcal) * 1.05:
+                return
+            idx = next((i for i, it in enumerate(meal_items) if it.get("category") == "grain"), None)
+            if idx is None:
+                return
+            it = meal_items[idx]
+            portion = it.get("portion") or {}
+            q = float(portion.get("quantity") or 0.0)
+            u = str(portion.get("unit") or "g")
+            new_q = _clamp(q * 0.85, 30.0 if u.lower().startswith("g") else 1.0, q)
+            if abs(new_q - q) < 0.01:
+                return
+            grams = _portion_to_grams(name=str(it.get("name") or ""), quantity=new_q, unit=u) or 0.0
+            it["portion"] = {"quantity": float(round(new_q, 1)), "unit": u, "grams": float(round(grams, 1)) if grams else 0.0}
+            it["macros"] = _calc_macros_for_portion(name=str(it.get("name") or ""), grams=grams) if grams else {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
+
+    def build_meal(meal: MealName, day_index: int, used_today: set[str]) -> List[MealPlanItemV3]:
+        want_protein = gap_status.get("protein") == "low"
+        want_carbs = gap_status.get("carbohydrates") == "low"
+        want_fats = gap_status.get("fats") == "low"
+
+        out: List[MealPlanItemV3] = []
+
+        def _add(name: str, source: Literal["purchased", "recommended"] = "purchased") -> None:
+            cat = _get_food_category(name) or "unknown"
+            q, u = _portion_preset(name, cat, meal)
+            grams = _portion_to_grams(name=name, quantity=q, unit=u) or 0.0
+            macros = _calc_macros_for_portion(name=name, grams=grams) if grams else {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
+            out.append(
+                {
+                    "name": name,
+                    "category": cat,
+                    "portion": {"quantity": float(q), "unit": str(u), "grams": float(round(grams, 1)) if grams else 0.0},
+                    "macros": macros,
+                    "why": _why_for_item(name=name, category=cat, gap_status=gap_status, source=source),
+                    "source": source,
+                }
+            )
+            used_today.add(name)
+            if name in usage:
+                usage[name] += 1
+
+        if meal == "breakfast":
+            first_pool = pool_for("protein") if want_protein and pool_for("protein") else pool_for("dairy")
+            first = pick_item(pool=first_pool, day_index=day_index, meal=meal, avoid_set=used_today)
+            grain = pick_item(pool=pool_for("grain"), day_index=day_index, meal=meal, avoid_set=used_today)
+            fruit = pick_item(pool=pool_for("fruit"), day_index=day_index, meal=meal, avoid_set=used_today)
+            for nm in [first, grain, fruit]:
+                if nm:
+                    _add(nm)
+        elif meal == "lunch":
+            grain = pick_item(pool=pool_for("grain"), day_index=day_index, meal=meal, avoid_set=used_today)
+            protein = pick_item(pool=pool_for("protein"), day_index=day_index, meal=meal, avoid_set=used_today)
+            veg = pick_item(pool=pool_for("vegetable"), day_index=day_index, meal=meal, avoid_set=used_today)
+            fat = pick_item(pool=pool_for("fat"), day_index=day_index, meal=meal, avoid_set=used_today)
+            if want_carbs and not grain:
+                grain = pick_item(pool=pool_for("fruit"), day_index=day_index, meal=meal, avoid_set=used_today)
+            for nm in [grain, protein, veg]:
+                if nm:
+                    _add(nm)
+            if fat and (want_fats or len(out) < 4):
+                _add(fat)
+        else:  # dinner
+            protein = pick_item(pool=pool_for("protein"), day_index=day_index, meal=meal, avoid_set=used_today)
+            veg = pick_item(pool=pool_for("vegetable"), day_index=day_index, meal=meal, avoid_set=used_today)
+            grain = pick_item(pool=pool_for("grain"), day_index=day_index, meal=meal, avoid_set=used_today)
+            fat = pick_item(pool=pool_for("fat"), day_index=day_index, meal=meal, avoid_set=used_today)
+            for nm in [protein, veg]:
+                if nm:
+                    _add(nm)
+            if grain and (want_carbs or len(out) < 2):
+                _add(grain)
+            if fat and (want_fats or len(out) < 3):
+                _add(fat)
+
+        present = {str(i.get("category") or "unknown") for i in out}
+        if meal in ("lunch", "dinner") and "vegetable" not in present:
+            add_booster(out, "vegetable", meal)
+        if meal in ("lunch", "dinner") and "protein" not in present:
+            add_booster(out, "protein", meal)
+        if "fat" not in present and want_fats:
+            add_booster(out, "fat", meal)
+
+        main = None
+        for it in out:
+            main = main_food_label(str(it.get("name") or ""))
+            if main:
+                break
+        last_main[meal] = main or last_main.get(meal)
+        return out
+
+    plan: List[WeeklyDayPlanV3] = []
+    for day_index, day_name in enumerate(day_names):
+        used_today: set[str] = set()
+        breakfast = build_meal("breakfast", day_index, used_today)
+        lunch = build_meal("lunch", day_index, used_today)
+        dinner = build_meal("dinner", day_index, used_today)
+
+        downscale_grains(breakfast, meal_targets["breakfast"])
+        downscale_grains(lunch, meal_targets["lunch"])
+        downscale_grains(dinner, meal_targets["dinner"])
+
+        # Hard cap: do not exceed daily calorie target.
+        # Rule: reduce grain portions first (lunch -> dinner -> breakfast), then reduce added fats.
+        def _reduce_category(meal_items: List[MealPlanItemV3], category: FoodCategory, factor: float, min_g: float) -> bool:
+            idx = next((i for i, it in enumerate(meal_items) if it.get("category") == category), None)
+            if idx is None:
+                return False
+            it = meal_items[idx]
+            portion = it.get("portion") or {}
+            q = float(portion.get("quantity") or 0.0)
+            u = str(portion.get("unit") or "g")
+            if q <= 0:
+                return False
+            new_q = q * float(factor)
+            if u.lower() in ["pcs", "pc", "piece", "pieces"]:
+                # Reduce pieces but keep at least 1.
+                new_q = max(1.0, round(new_q))
+            else:
+                new_q = _clamp(new_q, float(min_g), q)
+            if abs(new_q - q) < 0.01:
+                return False
+            grams = _portion_to_grams(name=str(it.get("name") or ""), quantity=new_q, unit=u) or 0.0
+            it["portion"] = {"quantity": float(round(new_q, 1)), "unit": u, "grams": float(round(grams, 1)) if grams else 0.0}
+            it["macros"] = _calc_macros_for_portion(name=str(it.get("name") or ""), grams=grams) if grams else {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fats": 0.0}
+            return True
+
+        for _ in range(10):
+            total_now = meal_total(breakfast) + meal_total(lunch) + meal_total(dinner)
+            if total_now <= float(target):
+                break
+            changed = (
+                _reduce_category(lunch, "grain", 0.85, 30.0)
+                or _reduce_category(dinner, "grain", 0.85, 30.0)
+                or _reduce_category(breakfast, "grain", 0.85, 30.0)
+                or _reduce_category(lunch, "fat", 0.80, 5.0)
+                or _reduce_category(dinner, "fat", 0.80, 5.0)
+                or _reduce_category(breakfast, "fat", 0.80, 5.0)
+            )
+            if not changed:
+                break
+
+        total_cal = float(round(meal_total(breakfast) + meal_total(lunch) + meal_total(dinner), 1))
+        total_macros: MealPlanMacros = {
+            "calories": total_cal,
+            "protein": float(round(sum(float(i.get("macros", {}).get("protein") or 0.0) for i in breakfast + lunch + dinner), 1)),
+            "carbs": float(round(sum(float(i.get("macros", {}).get("carbs") or 0.0) for i in breakfast + lunch + dinner), 1)),
+            "fats": float(round(sum(float(i.get("macros", {}).get("fats") or 0.0) for i in breakfast + lunch + dinner), 1)),
+        }
+        plan.append(
+            {
+                "day": day_name,
+                "breakfast": breakfast,
+                "lunch": lunch,
+                "dinner": dinner,
+                "total_calories": total_cal,
+                "total_macros": total_macros,
+                "calorie_target": target,
+                "status": _status_vs_target(total_cal, target),
+                "suggested_additions": suggested_additions,
+                "decision_rules": [
+                    "Prefer purchased items first.",
+                    "Each meal aims for carbs + protein + vegetables/fiber + healthy fats.",
+                    "Avoid repeating the same main item on consecutive days (per meal).",
+                    "Keep calories near the daily target by reducing grain portions first when needed.",
+                    "Bias selections toward low nutrients (protein/carbs/fats) when gaps are detected.",
+                ],
+            }
+        )
+
+    return plan
 

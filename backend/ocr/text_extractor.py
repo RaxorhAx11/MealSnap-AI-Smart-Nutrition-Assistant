@@ -2,11 +2,10 @@ import easyocr
 from typing import List, Optional
 import os
 
-# Fix for Pillow 10+ compatibility with EasyOCR
-# ANTIALIAS was removed in Pillow 10.0.0, but EasyOCR still uses it
+
 try:
     from PIL import Image
-    # Add ANTIALIAS back if it doesn't exist (for Pillow 10+)
+    
     if not hasattr(Image, 'ANTIALIAS'):
         Image.ANTIALIAS = Image.LANCZOS
 except ImportError:
@@ -50,16 +49,14 @@ class OCRReader:
             raise FileNotFoundError(f"Image file not found: {image_path}")
         
         try:
-            # Read text from image using EasyOCR
-            # readtext() returns a list of tuples: (bbox, text, confidence)
-            # We only need the text part (index 1)
+            
             results = self.reader.readtext(image_path)
             
             # Extract text lines from results
             # Filter out low-confidence detections (confidence < 0.5)
             text_lines = []
             for (bbox, text, confidence) in results:
-                if confidence > 0.5:  # Filter low-confidence detections
+                if confidence > 0.5:  
                     text_lines.append(text.strip())
             
             return text_lines

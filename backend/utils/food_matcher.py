@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from rapidfuzz import fuzz, process
+import re
 
 # Handle both relative import (when used as module) and absolute import (when run directly)
 try:
@@ -51,8 +52,8 @@ def load_nutrition_database_with_mapping() -> Tuple[List[str], Dict[str, str]]:
             # Also include aliases for matching
             aliases_str = row.get('aliases', '').strip()
             if aliases_str:
-                # Split comma-separated aliases
-                aliases = [alias.strip() for alias in aliases_str.split(',') if alias.strip()]
+                # Split aliases with common separators (comma/semicolon/pipe)
+                aliases = [a.strip() for a in re.split(r"[;,|]+", aliases_str) if a and a.strip()]
                 for alias in aliases:
                     normalized_alias = normalize_food_name(alias)
                     if normalized_alias:
@@ -155,19 +156,60 @@ def match_food_name(
     if not database_foods or not alias_mapping:
         return None
     
-    # Use RapidFuzz's process.extractOne() to find the best match
-    # Lower threshold initially to catch more candidates, then apply boost
-    result = process.extractOne(
-        normalized_food_name,
-        database_foods,
-        scorer=fuzz.ratio,  # Use standard ratio for character-level similarity
-        score_cutoff=similarity_threshold - ALIAS_CONFIDENCE_BOOST  # Lower threshold to catch alias matches
-    )
-    
-    if not result:
+    # Fast path: exact match on normalized key (canonical or alias)
+    key = normalized_food_name.strip()
+    if key in alias_mapping:
+        canonical_name = alias_mapping.get(key, key)
+        is_alias_match = (key != canonical_name)
+        score = 100.0 if not is_alias_match else 100.0  # exact match
+        return (canonical_name, score, is_alias_match)
+
+    def _squeeze_repeats(s: str) -> str:
+        # Collapse 3+ repeated chars to 1 (helps OCR like "milkk" / "appple")
+        # Keep double letters (e.g., "coffee") intact to reduce false changes.
+        return re.sub(r"(.)\1{2,}", r"\1", s)
+
+    # Generate a few variants to improve OCR-typo robustness
+    variants = []
+    variants.append(key)
+    squeezed = _squeeze_repeats(key)
+    if squeezed != key:
+        variants.append(squeezed)
+    no_space = key.replace(" ", "")
+    if no_space != key:
+        variants.append(no_space)
+    no_space_squeezed = _squeeze_repeats(no_space)
+    if no_space_squeezed not in variants:
+        variants.append(no_space_squeezed)
+
+    # Use multiple scorers; WRatio is generally stronger for typos + token differences.
+    # We keep a single threshold API but evaluate best score across variants.
+    best: Optional[Tuple[str, float]] = None  # (matched_name, score)
+    best_variant_score = -1.0
+    for v in variants:
+        # Lower cutoff slightly for very short strings to avoid missing simple typos,
+        # but never below 60 to keep false matches in check.
+        cutoff = similarity_threshold - ALIAS_CONFIDENCE_BOOST
+        if len(v) <= 4:
+            cutoff = max(60.0, cutoff - 5.0)
+
+        # Try WRatio first
+        r1 = process.extractOne(v, database_foods, scorer=fuzz.WRatio, score_cutoff=cutoff)
+        # Then token_set_ratio as a fallback for multi-word cases
+        r2 = process.extractOne(v, database_foods, scorer=fuzz.token_set_ratio, score_cutoff=cutoff)
+
+        for r in (r1, r2):
+            if not r:
+                continue
+            matched_name, base_score, _ = r
+            if base_score > best_variant_score:
+                best_variant_score = float(base_score)
+                best = (matched_name, float(base_score))
+
+    if not best:
         return None
-    
-    matched_name, base_score, _ = result
+
+    matched_name, base_score = best
     
     # Check if the match was on an alias or canonical name
     canonical_name = alias_mapping.get(matched_name, matched_name)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { analyzeNutrition } from '../services/api';
+import { analyzeNutrition, fetchDashboardNutrition } from '../services/api';
 
 const NutritionSummary = () => {
   const navigate = useNavigate();
@@ -21,7 +21,27 @@ const NutritionSummary = () => {
       // If items are passed, fetch nutrition data
       fetchNutritionData(items);
     } else {
-      setError('No items or nutrition data provided');
+      // Fallback: load the latest stored summary (dashboard source) so navigation from Dashboard works.
+      (async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          const stored = await fetchDashboardNutrition();
+          // Map stored (date, calories, protein, carbs, fats) into this page's expected shape.
+          setNutritionData({
+            total_calories: stored?.calories ?? 0,
+            total_protein: stored?.protein ?? 0,
+            total_carbs: stored?.carbs ?? 0,
+            total_fats: stored?.fats ?? 0,
+            date: stored?.date,
+            unknown_items: [],
+          });
+        } catch (e) {
+          setError('No items or nutrition data provided');
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
   }, [location]);
 

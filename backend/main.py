@@ -13,7 +13,16 @@ from datetime import date as date_type, timedelta
 from utils.image_processing import preprocess_receipt_image
 from db.database import init_db
 from db.database import get_db
-from db.models import NutritionSummaryEntry, User, WeightEntry, ConfirmedItemEntry, MealPlanEntry
+from db.models import (
+    NutritionSummaryEntry,
+    User,
+    WeightEntry,
+    WeightLog,
+    ConfirmedItemEntry,
+    MealPlanEntry,
+    ReceiptEntry,
+    UserProfile,
+)
 from deps import CurrentUser, get_current_user
 from utils import (
     normalize_food_name,
@@ -26,11 +35,25 @@ from utils import (
     verify_password,
 )
 from meal_plan.rules import categorize_food_items
-from meal_plan.planner import generate_weekly_meal_plan, generate_daily_meal_plan
+from meal_plan.planner import (
+    generate_weekly_meal_plan,
+    generate_daily_meal_plan,
+    generate_daily_meal_plan_v2,
+    generate_weekly_meal_plan_v3,
+)
 from ocr import OCRReader
-from sqlalchemy import or_, select, delete
+from sqlalchemy import or_, select, delete, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from services.nutrition_gap_service import compute_nutrition_gaps_from_summary
+from services.recommendation_service import build_grocery_recommendations_from_gaps
+from services.weight_analysis_service import (
+    analyze_trend_from_weights,
+    build_weight_insights,
+    calculate_bmi,
+    compute_goal_progress,
+)
+from typing import Literal
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -200,6 +223,225 @@ def auth_me(current_user: CurrentUser):
 
 app.include_router(auth_router)
 
+# -----------------------------------------------------------------------------
+# Personal Profile module
+# -----------------------------------------------------------------------------
+
+ActivityLevel = Literal["low", "moderate", "high"]
+DietPreference = Literal["veg", "non-veg", "vegan"]
+FitnessGoal = Literal["lose_weight", "maintain_weight", "gain_weight"]
+
+
+class UserProfileResponse(BaseModel):
+    user_id: int
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    height_cm: Optional[float] = None
+    current_weight_kg: Optional[float] = None
+    target_weight_kg: Optional[float] = None
+    activity_level: Optional[ActivityLevel] = None
+    diet_preference: Optional[DietPreference] = None
+    fitness_goal: Optional[FitnessGoal] = None
+
+
+class UserProfileUpdateRequest(BaseModel):
+    age: Optional[int] = Field(default=None, ge=1, le=120)
+    gender: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    height_cm: Optional[float] = Field(default=None, gt=0, le=300)
+    current_weight_kg: Optional[float] = Field(default=None, gt=0, le=700)
+    target_weight_kg: Optional[float] = Field(default=None, gt=0, le=700)
+    activity_level: Optional[ActivityLevel] = None
+    diet_preference: Optional[DietPreference] = None
+    fitness_goal: Optional[FitnessGoal] = None
+
+
+@app.get("/profile", response_model=UserProfileResponse)
+def get_profile(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Return the current user's personal profile data.
+    Requires auth; does not modify authentication logic.
+    """
+    try:
+        row = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found. Please create/update it first.")
+        return UserProfileResponse(
+            user_id=row.user_id,
+            age=row.age,
+            gender=row.gender,
+            height_cm=row.height_cm,
+            current_weight_kg=row.current_weight_kg,
+            target_weight_kg=row.target_weight_kg,
+            activity_level=row.activity_level,
+            diet_preference=row.diet_preference,
+            fitness_goal=row.fitness_goal,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error fetching profile: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error fetching profile: {str(e)}")
+
+
+@app.post("/profile/update", response_model=UserProfileResponse)
+def update_profile(
+    payload: UserProfileUpdateRequest,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Create or update the current user's personal profile data.
+    Requires auth; does not modify authentication logic.
+    """
+    try:
+        row = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+        if not row:
+            row = UserProfile(user_id=current_user.id)
+            db.add(row)
+
+        if payload.age is not None:
+            row.age = int(payload.age)
+        if payload.gender is not None:
+            row.gender = payload.gender.strip()
+        if payload.height_cm is not None:
+            row.height_cm = float(payload.height_cm)
+        if payload.current_weight_kg is not None:
+            row.current_weight_kg = float(payload.current_weight_kg)
+        if payload.target_weight_kg is not None:
+            row.target_weight_kg = float(payload.target_weight_kg)
+        if payload.activity_level is not None:
+            row.activity_level = payload.activity_level
+        if payload.diet_preference is not None:
+            row.diet_preference = payload.diet_preference
+        if payload.fitness_goal is not None:
+            row.fitness_goal = payload.fitness_goal
+
+        db.commit()
+        db.refresh(row)
+
+        return UserProfileResponse(
+            user_id=row.user_id,
+            age=row.age,
+            gender=row.gender,
+            height_cm=row.height_cm,
+            current_weight_kg=row.current_weight_kg,
+            target_weight_kg=row.target_weight_kg,
+            activity_level=row.activity_level,
+            diet_preference=row.diet_preference,
+            fitness_goal=row.fitness_goal,
+        )
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Profile already exists and could not be updated.")
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error updating profile: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Unexpected error updating profile: {str(e)}")
+
+
+# -----------------------------------------------------------------------------
+# Personal Nutrition Target module
+# -----------------------------------------------------------------------------
+
+class NutritionTargetResponse(BaseModel):
+    daily_calorie_target: int
+    recommended_protein: int
+    recommended_carbs: int
+    recommended_fats: int
+
+
+def _activity_multiplier(level: str) -> float:
+    lvl = (level or "").strip().lower()
+    if lvl == "low":
+        return 1.2
+    if lvl == "moderate":
+        return 1.55
+    if lvl == "high":
+        return 1.725
+    raise ValueError("Invalid activity_level")
+
+
+def _sex_offset(gender: str) -> int:
+    g = (gender or "").strip().lower()
+    if g in ("male", "m"):
+        return 5
+    if g in ("female", "f"):
+        return -161
+    raise ValueError("Invalid gender")
+
+
+@app.get("/nutrition/target", response_model=NutritionTargetResponse)
+def get_nutrition_target(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Estimate daily calorie and macro targets from the user's personal profile.
+
+    BMR (simplified Mifflin-St Jeor):
+      male:   10*w + 6.25*h - 5*a + 5
+      female: 10*w + 6.25*h - 5*a - 161
+    Multiply by activity factor.
+    """
+    try:
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found. Please create/update it first.")
+
+        missing = []
+        if profile.age is None:
+            missing.append("age")
+        if not profile.gender:
+            missing.append("gender")
+        if profile.height_cm is None:
+            missing.append("height_cm")
+        if profile.current_weight_kg is None:
+            missing.append("current_weight_kg")
+        if not profile.activity_level:
+            missing.append("activity_level")
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Profile incomplete. Missing: {', '.join(missing)}")
+
+        w = float(profile.current_weight_kg)
+        h = float(profile.height_cm)
+        a = int(profile.age)
+
+        bmr = 10 * w + 6.25 * h - 5 * a + _sex_offset(profile.gender)
+        daily_cal = int(round(bmr * _activity_multiplier(profile.activity_level)))
+
+        # Simple, non-medical macro targets:
+        # - Protein: ~1.6 g/kg/day (floor 50g)
+        # - Fats: ~30% of calories
+        # - Carbs: remaining calories
+        protein_g = int(round(max(50.0, 1.6 * w)))
+        fats_g = int(round((daily_cal * 0.30) / 9))
+        carbs_cal = max(0.0, daily_cal - (protein_g * 4) - (fats_g * 9))
+        carbs_g = int(round(carbs_cal / 4))
+
+        return NutritionTargetResponse(
+            daily_calorie_target=daily_cal,
+            recommended_protein=protein_g,
+            recommended_carbs=carbs_g,
+            recommended_fats=fats_g,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error computing nutrition target: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error computing nutrition target: {str(e)}")
+
 
 @app.get("/health")
 async def health_check():
@@ -217,15 +459,136 @@ async def root():
     return {"message": "Receipt OCR API"}
 
 
+# Receipt header/footer and non-product keywords to exclude from detected items.
+# Single words use word-boundary matching; phrases match as substring.
+IGNORED_RECEIPT_WORDS = [
+    "super mart",
+    "supermart",
+    "supermarket",
+    "receipt",
+    "subtotal",
+    "sub total",
+    "total",
+    "gst",
+    "tax",
+    "upi",
+    "payment",
+    "phone",
+    "address",
+    "city",
+    "state",
+    "pincode",
+    "bill no",
+    "invoice",
+    "date",
+    "time",
+    "cash",
+    "card",
+    "balance",
+    "discount",
+    "amount",
+    "customer",
+    "thank you",
+    "visit again",
+    "net amount",
+    "round off",
+    "change",
+    "ref no",
+    "transaction",
+    "Box",
+    "Tub",
+    "kg",
+    "pc",
+]
+
+# Address/location keywords: lines containing these are treated as address lines and excluded.
+# Single words use word-boundary matching; phrases match as substring.
+ADDRESS_KEYWORDS = [
+    "road",
+    "rd",
+    "street",
+    "st",
+    "lane",
+    "area",
+    "nagar",
+    "colony",
+    "center",
+    "centre",
+    "mall",
+    "market",
+    "opposite",
+    "opp",
+    "near",
+    "beside",
+    "behind",
+    "building",
+    "shop no",
+    "floor",
+    "complex",
+    "plaza",
+    "block",
+]
+
+
+def _line_contains_ignored_receipt_word(line: str) -> bool:
+    """
+    Return True if the line should be ignored (contains receipt meta words).
+    Normalizes whitespace and uses word-boundary for single words to avoid
+    over-filtering (e.g. 'discount' matches line "DISCOUNT" but not "DISCOUNTED MILK").
+    """
+    if not line or not line.strip():
+        return True
+    # Normalize: collapse any whitespace to single space, strip, lower (handles "SUPER  MART", "GST  5%")
+    normalized = re.sub(r"\s+", " ", line.strip().lower())
+    if not normalized:
+        return True
+    for word in IGNORED_RECEIPT_WORDS:
+        word = word.strip().lower()
+        if not word:
+            continue
+        if " " in word:
+            # Phrase: substring match (e.g. "super mart", "thank you")
+            if word in normalized:
+                return True
+        else:
+            # Single word: word-boundary match so "discount" doesn't match "discounted"
+            if re.search(r"\b" + re.escape(word) + r"\b", normalized):
+                return True
+    return False
+
+
+def _line_contains_address_keyword(line: str) -> bool:
+    """
+    Return True if the line looks like an address/location (contains address keywords).
+    Uses same normalization and word-boundary rules as receipt-word check.
+    """
+    if not line or not line.strip():
+        return True
+    normalized = re.sub(r"\s+", " ", line.strip().lower())
+    if not normalized:
+        return True
+    for word in ADDRESS_KEYWORDS:
+        word = word.strip().lower()
+        if not word:
+            continue
+        if " " in word:
+            if word in normalized:
+                return True
+        else:
+            if re.search(r"\b" + re.escape(word) + r"\b", normalized):
+                return True
+    return False
+
+
 def filter_prices_and_numbers(text_lines: list) -> list:
     """
-    Filter out lines containing prices, totals, and numbers.
+    Filter out lines containing prices, totals, non-product receipt text, and numbers.
     
     Args:
         text_lines: List of text strings from OCR
     
     Returns:
-        Filtered list without price/number lines
+        Filtered list without price/number and receipt-meta lines
     """
     filtered_lines = []
     
@@ -238,6 +601,14 @@ def filter_prices_and_numbers(text_lines: list) -> list:
     for line in text_lines:
         # Skip empty lines
         if not line.strip():
+            continue
+        
+        # Skip lines that contain any ignored receipt/non-product keyword (normalized + word-boundary)
+        if _line_contains_ignored_receipt_word(line):
+            continue
+        
+        # Skip address/location lines (e.g. "123 MG ROAD", "OPPOSITE BUS STAND")
+        if _line_contains_address_keyword(line):
             continue
         
         # Skip lines with currency symbols
@@ -266,6 +637,7 @@ def filter_prices_and_numbers(text_lines: list) -> list:
 async def upload_receipt(
     current_user: CurrentUser,
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
     """
     Upload receipt image, preprocess it, run OCR, and return extracted text.
@@ -299,6 +671,20 @@ async def upload_receipt(
         contents = await file.read()
         with open(file_path, "wb") as f:
             f.write(contents)
+
+        # Store receipt metadata (user-scoped).
+        try:
+            receipt_row = ReceiptEntry(
+                user_id=current_user.id,
+                upload_time=datetime.now(timezone.utc),
+                file_path=str(file_path),
+            )
+            db.add(receipt_row)
+            db.commit()
+        except Exception as db_error:
+            # Do not block OCR if history persistence fails.
+            db.rollback()
+            print(f"Warning: Failed to save receipt metadata: {str(db_error)}")
 
         # Step 2: Preprocess the image (output under processed/{user_id}/)
         processed_path = preprocess_receipt_image(str(file_path), output_dir=str(user_processed_dir))
@@ -341,6 +727,78 @@ async def upload_receipt(
             status_code=500,
             detail=f"Error processing receipt: {str(e)}"
         )
+
+
+class ReceiptHistoryItem(BaseModel):
+    receipt_date: date_type
+    total_calories: float = 0.0
+    items_count: int = 0
+
+
+@app.get("/receipts/history", response_model=List[ReceiptHistoryItem])
+def get_receipt_history(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Receipt History module.
+
+    Returns user-scoped receipt upload events and links them (by receipt_date) to:
+    - confirmed items count
+    - stored daily nutrition summary calories
+    - (implicitly) meal plan for that date (not returned in this minimal payload)
+    """
+    try:
+        receipts = db.scalars(
+            select(ReceiptEntry)
+            .where(ReceiptEntry.user_id == current_user.id)
+            .order_by(ReceiptEntry.upload_time.desc())
+        ).all()
+
+        if not receipts:
+            return []
+
+        # Collect dates for efficient linking.
+        dates = [r.upload_time.date() for r in receipts if r.upload_time]
+        unique_dates = sorted(set(dates))
+
+        # Calories by date (stored summary).
+        summaries = db.scalars(
+            select(NutritionSummaryEntry)
+            .where(
+                NutritionSummaryEntry.user_id == current_user.id,
+                NutritionSummaryEntry.date.in_(unique_dates),
+            )
+        ).all()
+        calories_by_date = {s.date: float(s.calories) for s in summaries}
+
+        # Confirmed items count by date.
+        counts = db.execute(
+            select(ConfirmedItemEntry.date, func.count(ConfirmedItemEntry.id))
+            .where(
+                ConfirmedItemEntry.user_id == current_user.id,
+                ConfirmedItemEntry.date.in_(unique_dates),
+            )
+            .group_by(ConfirmedItemEntry.date)
+        ).all()
+        count_by_date = {row[0]: int(row[1]) for row in counts}
+
+        # Emit one row per receipt upload event.
+        out: List[ReceiptHistoryItem] = []
+        for r in receipts:
+            d = r.upload_time.date()
+            out.append(
+                ReceiptHistoryItem(
+                    receipt_date=d,
+                    total_calories=float(calories_by_date.get(d, 0.0)),
+                    items_count=int(count_by_date.get(d, 0)),
+                )
+            )
+        return out
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error fetching receipts: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error fetching receipt history: {str(e)}")
 
 
 # Pydantic models for nutrition analysis
@@ -711,6 +1169,9 @@ async def analyze_nutrition(
         NutritionAnalysisResponse with per-item nutrition and total summary
     """
     try:
+        if not request.items:
+            raise HTTPException(status_code=400, detail="No items provided for nutrition analysis.")
+
         items_result = []
         total_calories = 0.0
         total_protein = 0.0
@@ -951,6 +1412,8 @@ async def analyze_nutrition(
             message=message
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         # Handle any unexpected errors at the endpoint level
         raise HTTPException(
@@ -971,6 +1434,91 @@ class WeightSaveRequest(BaseModel):
 class WeightEntryResponse(BaseModel):
     date: date_type
     weight: float
+
+
+class WeightAddRequest(BaseModel):
+    weight_kg: float = Field(..., ge=30, le=300, description="Weight in kg (30–300)")
+    note: Optional[str] = Field(default=None, max_length=500)
+    body_fat_percentage: Optional[float] = Field(default=None, ge=1, le=80)
+
+
+class WeightAddResponse(BaseModel):
+    message: str
+    current_weight: float
+
+
+class WeightLogHistoryItem(BaseModel):
+    date: date_type
+    weight: float
+
+
+class WeightAnalysisResponse(BaseModel):
+    trend: Literal["decreasing", "increasing", "stable"]
+    change_7_days: float
+    message: str
+
+
+class BmiResponse(BaseModel):
+    bmi: float
+    category: Literal["Underweight", "Normal", "Overweight", "Obese"]
+
+
+class WeightGoalProgressResponse(BaseModel):
+    current_weight: float
+    target_weight: float
+    remaining_difference: float
+    progress_percentage: int
+
+
+class WeightRecommendationsResponse(BaseModel):
+    recommendations: List[str]
+
+
+def _compute_weekly_weight_analysis_from_logs(logs: List[WeightLog]) -> WeightAnalysisResponse:
+    """
+    Compute 7-day change and trend from an ordered list of WeightLog rows.
+    Expects logs sorted ascending by recorded_at.
+    """
+    if len(logs) < 2:
+        raise ValueError("Not enough data points")
+
+    start_w = float(logs[0].weight_kg)
+    end_w = float(logs[-1].weight_kg)
+    diff = round(end_w - start_w, 1)
+
+    eps = 0.2
+    if diff <= -eps:
+        trend: Literal["decreasing", "increasing", "stable"] = "decreasing"
+        message = f"You lost {abs(diff):.1f} kg over the past week"
+    elif diff >= eps:
+        trend = "increasing"
+        message = f"You gained {diff:.1f} kg over the past week"
+    else:
+        trend = "stable"
+        message = "Your weight is stable over the past week"
+
+    return WeightAnalysisResponse(trend=trend, change_7_days=diff, message=message)
+
+
+def _try_compute_calorie_target_from_profile(profile: UserProfile | None) -> int | None:
+    if not profile:
+        return None
+    if (
+        profile.age is None
+        or not profile.gender
+        or profile.height_cm is None
+        or profile.current_weight_kg is None
+        or not profile.activity_level
+    ):
+        return None
+    try:
+        w = float(profile.current_weight_kg)
+        h = float(profile.height_cm)
+        a = int(profile.age)
+        bmr = 10 * w + 6.25 * h - 5 * a + _sex_offset(profile.gender)
+        return int(round(bmr * _activity_multiplier(profile.activity_level)))
+    except Exception:
+        return None
 
 
 class NutritionSummarySaveRequest(BaseModel):
@@ -1005,9 +1553,58 @@ class PurchaseSuggestionsResponse(BaseModel):
 class DashboardResponse(BaseModel):
     start_date: date_type
     end_date: date_type
-    weight_history: List[WeightEntryResponse]
+    # Weight history for charts (from weight_logs; sorted ascending)
+    weight_history: List[WeightLogHistoryItem]
+    # Legacy daily weights (from weight_entries) kept for backward compatibility
+    legacy_daily_weight_history: Optional[List[WeightEntryResponse]] = None
+    # ---- Weight Tracker (enhanced; uses weight_logs + user_profile + analysis) ----
+    current_weight: Optional[float] = None
+    target_weight: Optional[float] = None
+    trend: Optional[Literal["decreasing", "increasing", "stable"]] = None
+    message: Optional[str] = None
+    weight_change_over_time: Optional[float] = None
+    # Weight progress analysis (structured; mirrors /weight/analysis)
+    weight_progress: Optional[WeightAnalysisResponse] = None
     nutrition_history: List[NutritionSummaryResponse]
     weekly_meal_plan: Optional[Dict[str, Any]] = None  # Saved meal plan from database
+    # ---- Aggregated "platform insights" (optional; backward compatible) ----
+    # Latest stored daily summary (same source as /dashboard-nutrition).
+    nutrition_summary: Optional[NutritionSummaryResponse] = None
+    # Nutrition gaps computed from latest stored summary.
+    nutrition_gaps: Optional[List["NutritionGapItem"]] = None
+    # Purchase recommendations derived from nutrition gaps.
+    purchase_recommendations: Optional[List[FoodSuggestion]] = None
+    # Explicit aliases for "personalized health overview" sections.
+    nutrition_gap_analysis: Optional[List["NutritionGapItem"]] = None
+    grocery_recommendations: Optional[List[FoodSuggestion]] = None
+
+
+class WeightTrackerDashboardPayload(BaseModel):
+    current_weight: Optional[float] = None
+    target_weight: Optional[float] = None
+    bmi: Optional[float] = None
+    bmi_category: Optional[Literal["Underweight", "Normal", "Overweight", "Obese"]] = None
+    trend: Optional[Literal["decreasing", "increasing", "stable"]] = None
+    message: Optional[str] = None
+    change_7_days: Optional[float] = None
+    goal_progress: Optional[WeightGoalProgressResponse] = None
+    recommendations: Optional[List[str]] = None
+    history: List[WeightLogHistoryItem] = []
+
+
+class DashboardResponseV2(DashboardResponse):
+    # Backward compatible: keeps existing fields, adds nested weight_tracker.
+    weight_tracker: Optional[WeightTrackerDashboardPayload] = None
+
+
+class NutritionGapItem(BaseModel):
+    nutrient: str
+    status: str
+    message: str
+
+
+class NutritionGapsResponse(BaseModel):
+    gaps: List[NutritionGapItem]
 
 
 @app.post("/weights", response_model=WeightEntryResponse)
@@ -1055,6 +1652,163 @@ def save_weight(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Unexpected error saving weight: {str(e)}")
+
+
+@app.post("/weight/add", response_model=WeightAddResponse)
+def add_weight_log(
+    payload: WeightAddRequest,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Add a timestamped weight entry (multiple entries over time).
+    User-based isolation: stored under current_user.id only; never shared between users.
+    """
+    try:
+        recorded_at = datetime.now(timezone.utc)
+        row = WeightLog(
+            user_id=current_user.id,
+            weight_kg=float(payload.weight_kg),
+            body_fat_percentage=float(payload.body_fat_percentage) if payload.body_fat_percentage is not None else None,
+            note=payload.note.strip() if payload.note else None,
+            recorded_date=recorded_at.date(),
+            recorded_at=recorded_at,
+        )
+        db.add(row)
+
+        # Keep profile's current_weight_kg in sync for personalization.
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+        if profile:
+            profile.current_weight_kg = float(payload.weight_kg)
+        db.commit()
+        db.refresh(row)
+        return WeightAddResponse(message="Weight recorded successfully", current_weight=float(row.weight_kg))
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="You already recorded a weight entry for today. Edit today’s entry instead of adding a duplicate.",
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error adding weight log: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Unexpected error adding weight log: {str(e)}")
+
+
+@app.get("/weight/history", response_model=List[WeightLogHistoryItem])
+def get_weight_log_history(
+    current_user: CurrentUser,
+    days: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch timestamped weight history sorted by recorded_at (ascending).
+    Returns the requested shape: [{date, weight}, ...]
+    """
+    try:
+        q = select(WeightLog).where(WeightLog.user_id == current_user.id)
+        if days is not None:
+            if days <= 0 or days > 3650:
+                raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+            start = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+            q = q.where(WeightLog.recorded_date >= start)
+
+        rows = db.scalars(q.order_by(WeightLog.recorded_date.asc(), WeightLog.id.asc())).all()
+        return [WeightLogHistoryItem(date=r.recorded_date, weight=float(r.weight_kg)) for r in rows]
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error fetching weight history: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error fetching weight history: {str(e)}")
+
+
+@app.get("/weight/analysis", response_model=WeightAnalysisResponse)
+def get_weight_progress_analysis(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Weight Progress Analysis based on timestamped weight logs.
+
+    Computes change over the past week using the earliest and latest entries
+    within the last 7 days window ending at the latest recorded entry.
+    """
+    try:
+        rows = db.scalars(
+            select(WeightLog)
+            .where(WeightLog.user_id == current_user.id)
+            .order_by(WeightLog.recorded_date.asc(), WeightLog.id.asc())
+        ).all()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No weight logs found. Add a weight entry first.")
+        series = [(r.recorded_date, float(r.weight_kg)) for r in rows]
+        analysis = analyze_trend_from_weights(series)
+        if not analysis:
+            raise HTTPException(status_code=404, detail="Not enough weight entries in the last 7 days (need at least 2).")
+        return WeightAnalysisResponse(trend=analysis.trend, change_7_days=analysis.change_7_days, message=analysis.message)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error analyzing weight: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error analyzing weight: {str(e)}")
+
+
+@app.get("/weight/recommendations", response_model=WeightRecommendationsResponse)
+def get_weight_recommendations(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Weight Recommendation Engine.
+
+    Inputs:
+    - weight trend (from weight_logs)
+    - user profile (targets, context)
+    - calorie intake history (nutrition_summaries)
+    """
+    try:
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+
+        # Latest 7 days calorie history (if available)
+        calorie_rows = db.scalars(
+            select(NutritionSummaryEntry)
+            .where(NutritionSummaryEntry.user_id == current_user.id)
+            .order_by(NutritionSummaryEntry.date.desc())
+            .limit(7)
+        ).all()
+        calories_avg: Optional[float] = None
+        if calorie_rows:
+            vals = [float(r.calories) for r in calorie_rows if r.calories is not None]
+            if vals:
+                calories_avg = sum(vals) / len(vals)
+
+        calorie_target = _try_compute_calorie_target_from_profile(profile)
+
+        rows = db.scalars(
+            select(WeightLog)
+            .where(WeightLog.user_id == current_user.id)
+            .order_by(WeightLog.recorded_date.asc(), WeightLog.id.asc())
+        ).all()
+        series = [(r.recorded_date, float(r.weight_kg)) for r in rows]
+        trend_analysis = analyze_trend_from_weights(series) if series else None
+
+        recs = build_weight_insights(
+            trend=trend_analysis.trend if trend_analysis else None,
+            fitness_goal=profile.fitness_goal if profile else None,
+            avg_calories_7d=calories_avg,
+            estimated_calorie_target=calorie_target,
+        )
+
+        return WeightRecommendationsResponse(recommendations=recs)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error generating recommendations: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error generating recommendations: {str(e)}")
 
 
 @app.get("/weights", response_model=List[WeightEntryResponse])
@@ -1149,7 +1903,7 @@ def save_nutrition_summary(
         raise HTTPException(status_code=500, detail=f"Unexpected error saving summary: {str(e)}")
 
 
-@app.get("/dashboard", response_model=DashboardResponse)
+@app.get("/dashboard", response_model=DashboardResponseV2)
 def get_dashboard(
     current_user: CurrentUser,
     days: int = 30,
@@ -1169,7 +1923,7 @@ def get_dashboard(
         start = effective_end - timedelta(days=days - 1)
 
         # User-scoped: only this user's weight and nutrition history.
-        weights = db.scalars(
+        legacy_daily_weights = db.scalars(
             select(WeightEntry)
             .where(
                 WeightEntry.user_id == current_user.id,
@@ -1178,6 +1932,55 @@ def get_dashboard(
             )
             .order_by(WeightEntry.date.asc())
         ).all()
+
+        # Timestamped weight logs for charting (weight_logs).
+        weight_logs = db.scalars(
+            select(WeightLog)
+            .where(
+                WeightLog.user_id == current_user.id,
+                WeightLog.recorded_at >= datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+                WeightLog.recorded_at <= datetime.combine(effective_end, datetime.max.time(), tzinfo=timezone.utc),
+            )
+            .order_by(WeightLog.recorded_at.asc(), WeightLog.id.asc())
+        ).all()
+
+        # Pull profile weights.
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+        target_weight = float(profile.target_weight_kg) if profile and profile.target_weight_kg is not None else None
+
+        latest_log = weight_logs[-1] if weight_logs else db.scalar(
+            select(WeightLog)
+            .where(WeightLog.user_id == current_user.id)
+            .order_by(WeightLog.recorded_at.desc(), WeightLog.id.desc())
+            .limit(1)
+        )
+        current_weight = float(latest_log.weight_kg) if latest_log else (
+            float(profile.current_weight_kg) if profile and profile.current_weight_kg is not None else None
+        )
+
+        # Trend analysis message (7-day window; tolerate missing data).
+        trend = None
+        trend_message = None
+        weekly_diff = None
+        weight_progress: Optional[WeightAnalysisResponse] = None
+        try:
+            if weight_logs:
+                series = [(w.recorded_date, float(w.weight_kg)) for w in weight_logs]
+                analysis = analyze_trend_from_weights(series)
+                if analysis:
+                    trend = analysis.trend
+                    trend_message = analysis.message
+                    weekly_diff = analysis.change_7_days
+                    weight_progress = WeightAnalysisResponse(
+                        trend=analysis.trend,
+                        change_7_days=analysis.change_7_days,
+                        message=analysis.message,
+                    )
+        except Exception:
+            trend = None
+            trend_message = None
+            weekly_diff = None
+            weight_progress = None
         nutrition = db.scalars(
             select(NutritionSummaryEntry)
             .where(
@@ -1187,6 +1990,39 @@ def get_dashboard(
             )
             .order_by(NutritionSummaryEntry.date.asc())
         ).all()
+
+        # Latest stored daily nutrition summary (user-scoped).
+        latest_summary_row = db.scalar(
+            select(NutritionSummaryEntry)
+            .where(NutritionSummaryEntry.user_id == current_user.id)
+            .order_by(NutritionSummaryEntry.date.desc())
+            .limit(1)
+        )
+        latest_summary: Optional[NutritionSummaryResponse] = None
+        latest_gaps: Optional[List[NutritionGapItem]] = None
+        latest_purchase_recs: Optional[List[FoodSuggestion]] = None
+
+        if latest_summary_row:
+            latest_summary = NutritionSummaryResponse(
+                date=latest_summary_row.date,
+                calories=latest_summary_row.calories,
+                protein=latest_summary_row.protein,
+                carbs=latest_summary_row.carbs,
+                fats=latest_summary_row.fats,
+            )
+            # Compute gaps and recommendations from stored summary (no recalculation of nutrition).
+            try:
+                computed_gaps = compute_nutrition_gaps_from_summary(
+                    protein_g=float(latest_summary_row.protein),
+                    carbs_g=float(latest_summary_row.carbs),
+                    fats_g=float(latest_summary_row.fats),
+                )
+                latest_gaps = [NutritionGapItem(**g) for g in computed_gaps]
+                computed_recs = build_grocery_recommendations_from_gaps(computed_gaps)
+                latest_purchase_recs = [FoodSuggestion(**r) for r in computed_recs]
+            except Exception as e:
+                # Do not fail dashboard if insights computation fails.
+                print(f"Warning: Failed to compute dashboard insights: {str(e)}")
 
         # Fetch the latest saved meal plan (user-scoped: only this user's plan).
         meal_plan_data = None
@@ -1216,10 +2052,79 @@ def get_dashboard(
             # Log error but don't fail the dashboard request
             print(f"Warning: Failed to load meal plan from database: {str(e)}")
 
-        return DashboardResponse(
+        # Weight tracker payload (v2): BMI + goal progress + recommendations.
+        bmi_val = None
+        bmi_cat = None
+        goal_progress = None
+        recs = None
+        try:
+            if profile and profile.height_cm and current_weight is not None:
+                bmi_res = calculate_bmi(weight_kg=float(current_weight), height_cm=float(profile.height_cm))
+                bmi_val = float(bmi_res.bmi)
+                bmi_cat = bmi_res.category
+            if profile and profile.target_weight_kg is not None and current_weight is not None:
+                start_weight = float(weight_logs[0].weight_kg) if weight_logs else None
+                gp = compute_goal_progress(
+                    current_weight=float(current_weight),
+                    target_weight=float(profile.target_weight_kg),
+                    start_weight=start_weight,
+                )
+                goal_progress = WeightGoalProgressResponse(
+                    current_weight=gp.current_weight,
+                    target_weight=gp.target_weight,
+                    remaining_difference=gp.remaining_difference,
+                    progress_percentage=gp.progress_percentage,
+                )
+            # Stored nutrition summary calories (no recalculation) -> avg over last 7 days.
+            calorie_rows = db.scalars(
+                select(NutritionSummaryEntry)
+                .where(NutritionSummaryEntry.user_id == current_user.id)
+                .order_by(NutritionSummaryEntry.date.desc())
+                .limit(7)
+            ).all()
+            calories_avg = None
+            if calorie_rows:
+                vals = [float(r.calories) for r in calorie_rows if r.calories is not None]
+                if vals:
+                    calories_avg = sum(vals) / len(vals)
+            cal_target = _try_compute_calorie_target_from_profile(profile)
+            recs = build_weight_insights(
+                trend=trend,
+                fitness_goal=profile.fitness_goal if profile else None,
+                avg_calories_7d=calories_avg,
+                estimated_calorie_target=cal_target,
+            )
+        except Exception:
+            bmi_val = None
+            bmi_cat = None
+            goal_progress = None
+            recs = None
+
+        weight_tracker = WeightTrackerDashboardPayload(
+            current_weight=current_weight,
+            target_weight=target_weight,
+            bmi=bmi_val,
+            bmi_category=bmi_cat,
+            trend=trend,
+            message=trend_message,
+            change_7_days=weekly_diff,
+            goal_progress=goal_progress,
+            recommendations=recs,
+            history=[WeightLogHistoryItem(date=w.recorded_date, weight=float(w.weight_kg)) for w in weight_logs],
+        )
+
+        return DashboardResponseV2(
             start_date=start,
             end_date=effective_end,
-            weight_history=[WeightEntryResponse(date=w.date, weight=w.weight) for w in weights],
+            weight_history=[WeightLogHistoryItem(date=w.recorded_date, weight=float(w.weight_kg)) for w in weight_logs],
+            legacy_daily_weight_history=[WeightEntryResponse(date=w.date, weight=w.weight) for w in legacy_daily_weights],
+            current_weight=current_weight,
+            target_weight=target_weight,
+            trend=trend,
+            message=trend_message,
+            weight_change_over_time=weekly_diff,
+            weight_progress=weight_progress,
+            weight_tracker=weight_tracker,
             nutrition_history=[
                 NutritionSummaryResponse(
                     date=n.date,
@@ -1231,6 +2136,11 @@ def get_dashboard(
                 for n in nutrition
             ],
             weekly_meal_plan=meal_plan_data,
+            nutrition_summary=latest_summary,
+            nutrition_gaps=latest_gaps,
+            purchase_recommendations=latest_purchase_recs,
+            nutrition_gap_analysis=latest_gaps,
+            grocery_recommendations=latest_purchase_recs,
         )
     except HTTPException:
         raise
@@ -1286,6 +2196,47 @@ def get_dashboard_nutrition(
         )
 
 
+@app.get("/nutrition-gaps", response_model=NutritionGapsResponse)
+def get_nutrition_gaps(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """
+    Nutrition Gap Analysis (workflow stage).
+
+    Uses the latest stored daily nutrition summary (macros) for the current user
+    and classifies each nutrient as low/adequate/high vs simple targets:
+      - Protein: ~75g/day
+      - Carbohydrates: ~250g/day
+      - Fats: ~70g/day
+    """
+    try:
+        latest = db.scalar(
+            select(NutritionSummaryEntry)
+            .where(NutritionSummaryEntry.user_id == current_user.id)
+            .order_by(NutritionSummaryEntry.date.desc())
+            .limit(1)
+        )
+        if not latest:
+            raise HTTPException(
+                status_code=404,
+                detail="No stored nutrition summary found. Please analyze nutrition first.",
+            )
+
+        gaps = compute_nutrition_gaps_from_summary(
+            protein_g=float(latest.protein),
+            carbs_g=float(latest.carbs),
+            fats_g=float(latest.fats),
+        )
+        return NutritionGapsResponse(gaps=gaps)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error fetching nutrition summary: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error generating nutrition gaps: {str(e)}")
+
+
 @app.get("/next-purchase-suggestions", response_model=PurchaseSuggestionsResponse)
 def get_next_purchase_suggestions(
     current_user: CurrentUser,
@@ -1309,19 +2260,16 @@ def get_next_purchase_suggestions(
                 status_code=404,
                 detail="No nutrition summary found in database. Please analyze nutrition first."
             )
-        
-        # Detect nutrition gaps from stored summary (returns dict with 'gaps' and 'nutrient_details')
-        gaps_result = identify_nutrition_gaps(
-            total_calories=float(latest.calories),
-            total_protein=float(latest.protein),
-            total_carbs=float(latest.carbs),
-            total_fats=float(latest.fats),
+
+        # 1) Run Nutrition Gap Analysis based on latest stored macros (workflow stage input).
+        gaps = compute_nutrition_gaps_from_summary(
+            protein_g=float(latest.protein),
+            carbs_g=float(latest.carbs),
+            fats_g=float(latest.fats),
         )
-        gaps = gaps_result["gaps"]
-        nutrient_details = gaps_result["nutrient_details"]
-        
-        # Generate food suggestions based on gaps (returns structured list with food, reason, nutrition_benefit)
-        suggested_foods = suggest_foods_for_gaps(gaps, nutrient_details)
+
+        # 2) Grocery Recommendation Engine: map low gaps -> foods with reasons/benefits.
+        suggested_foods = build_grocery_recommendations_from_gaps(gaps)
         
         # Create response message
         if len(suggested_foods) > 0:
@@ -1385,11 +2333,13 @@ async def generate_meal_plan(
     """
     try:
         item_names = []
+        confirmed_payload_items: List[Dict[str, object]] = []
         
         # Step 1: Get items from request if provided, otherwise fetch from database
         if request.items and len(request.items) > 0:
             # Use items from request (backward compatibility)
             item_names = [item.name for item in request.items if item.name.strip()]
+            confirmed_payload_items = [{"name": n, "quantity": None, "unit": None} for n in item_names if str(n).strip()]
         else:
             # User-scoped: fetch only this user's confirmed items for today.
             today = datetime.now().date()
@@ -1405,6 +2355,11 @@ async def generate_meal_plan(
             if confirmed_items:
                 # Extract item names from confirmed items
                 item_names = [item.name.strip() for item in confirmed_items if item.name and item.name.strip()]
+                confirmed_payload_items = [
+                    {"name": item.name.strip(), "quantity": item.quantity, "unit": item.unit}
+                    for item in confirmed_items
+                    if item.name and item.name.strip()
+                ]
             else:
                 # No confirmed items found - return empty plan with helpful message
                 empty_plan_days = generate_daily_meal_plan(
@@ -1429,18 +2384,48 @@ async def generate_meal_plan(
                 message="No items available; generated an empty placeholder plan.",
             )
 
-        # Step 2: Generate daily meal plan (no categorization needed - uses all items)
-        # Each day gets a combination of items from the available list
-        plan_days = generate_daily_meal_plan(
-            available_items=item_names,
-            daily_calorie_target=2000,
-            items_per_day=3  # Use 2-3 items per day for variety
+        # Step 2: Pull latest stored summary -> compute nutrition gaps to bias the plan.
+        latest_summary = db.scalar(
+            select(NutritionSummaryEntry)
+            .where(NutritionSummaryEntry.user_id == current_user.id)
+            .order_by(NutritionSummaryEntry.date.desc())
+            .limit(1)
         )
-        
-        # Step 3: Format as expected by response model
-        plan_dict = {"days": plan_days}
+        gaps = []
+        if latest_summary:
+            gaps = compute_nutrition_gaps_from_summary(
+                protein_g=float(latest_summary.protein),
+                carbs_g=float(latest_summary.carbs),
+                fats_g=float(latest_summary.fats),
+            )
 
-        # Step 4: Save meal plan to database (user-scoped: only this user's plan).
+        # Step 3: Determine a user-specific daily calorie target (if profile is complete).
+        # Falls back to 2000 to keep behavior stable when profile is missing.
+        daily_target = 2000
+        try:
+            profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+            maybe_target = _try_compute_calorie_target_from_profile(profile)
+            if maybe_target is not None and int(maybe_target) > 0:
+                daily_target = int(maybe_target)
+        except Exception:
+            daily_target = 2000
+
+        # Step 4: Generate deterministic, realistic weekly plan with:
+        # - breakfast/lunch/dinner
+        # - per-item portions + macros
+        # - explanations (reason + nutrition benefit)
+        # - variety rules across the week
+        plan_days = generate_weekly_meal_plan_v3(
+            confirmed_payload_items,
+            daily_calorie_target=daily_target,
+            nutrition_gaps=gaps,
+            days_count=3,
+        )
+
+        # Step 5: Format as expected by response model
+        plan_dict = {"days": plan_days, "version": "v3-3days"}
+
+        # Step 6: Save meal plan to database (user-scoped: only this user's plan).
         try:
             today = datetime.now().date()
             plan_json = json.dumps(plan_dict)

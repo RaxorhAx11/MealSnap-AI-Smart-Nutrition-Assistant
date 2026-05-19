@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { signup } from '../services/api';
+import AuthLogo from './AuthLogo';
 
 function Signup() {
   const [username, setUsername] = useState('');
@@ -30,9 +31,15 @@ function Signup() {
 
   return (
     <div className="auth-page">
+      <header className="auth-page-header">
+        <AuthLogo />
+        <h1 className="auth-page-title">Sign up</h1>
+        <p className="auth-page-subtitle">Create an account to start tracking meals.</p>
+      </header>
+
       <div className="auth-card">
         <div className="auth-card-header">
-          <h1 className="auth-card-title">Create your account</h1>
+          <h2 className="auth-card-title">Create your account</h2>
           <p className="auth-card-subtitle">
             Start tracking your meals and nutrition insights.
           </p>
