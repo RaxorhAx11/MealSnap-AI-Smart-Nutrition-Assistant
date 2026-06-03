@@ -77,7 +77,19 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 # Initialize OCR reader (shared instance for efficiency)
 # First initialization may take time to download models
-ocr_reader = OCRReader(languages=['en'], gpu=False)
+ocr_reader = None
+
+
+def get_ocr_reader():
+    global ocr_reader
+
+    if ocr_reader is None:
+        ocr_reader = OCRReader(
+            languages=['en'],
+            gpu=False
+        )
+
+    return ocr_reader
 
 # Enable CORS for React frontend
 app.add_middleware(
@@ -690,7 +702,9 @@ async def upload_receipt(
         processed_path = preprocess_receipt_image(str(file_path), output_dir=str(user_processed_dir))
         
         # Step 3: Run OCR on processed image
-        ocr_text_lines = ocr_reader.extract_text(processed_path)
+        ocr_text_lines = get_ocr_reader().extract_text(
+    processed_path
+)
         
         # Step 4: Filter out prices, totals, and numbers
         filtered_text = filter_prices_and_numbers(ocr_text_lines)
