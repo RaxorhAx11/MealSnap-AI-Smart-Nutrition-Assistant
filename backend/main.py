@@ -94,7 +94,10 @@ def get_ocr_reader():
 # Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React default port
+    allow_origins=[
+        "http://localhost:3000",
+        "https://mealsnapai1.netlify.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
