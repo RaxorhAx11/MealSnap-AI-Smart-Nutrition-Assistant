@@ -1,3 +1,6 @@
+Live-
+mealsnapai2.netlify.app
+
 # MealSnap — AI Smart Nutrition Assistant
 
 MealSnap is a full-stack app that uses receipt OCR, a nutrition database, and meal planning to help users track and improve their diet. Upload receipt photos, review and adjust items, get nutrition analysis, and generate weekly meal plans.
