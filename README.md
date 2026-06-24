@@ -1,5 +1,5 @@
 Live-
-mealsnapai2.netlify.app
+https://mealsnapai2.netlify.app/
 
 # MealSnap — AI Smart Nutrition Assistant
 
